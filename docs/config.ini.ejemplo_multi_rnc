@@ -1,0 +1,33 @@
+; config.ini junto a FacturacionElectronicaDGII.dll
+; [general]: URLs DGII compartidas por todos los clientes
+; [rnc_XXXXX]: una sección por RNC (empresa legal). También acepta [XXXXX] sin prefijo rnc_
+
+[general]
+url_base=https://ecf.dgii.gov.do/CerteCF/
+urlfc_base=https://fc.dgii.gov.do/CerteCF/
+guardar_xml_monto_tablas=0
+NombreSistema=DASHA
+
+; Dueño del sistema: consultas DGII cuando Parametros.Usa_FacturacionElectronica = 0
+; El .p12 va en certificados\ junto a la DLL (misma ruta que empresas con FE)
+[sistema]
+rnc=131000000
+pathCertificado=certificados\dueno_sistema.p12
+passCertificado=clave_certificado_dueno
+
+; --- Cliente A ---
+[rnc_131083298]
+emp_codigo=1
+connectionString=Persist Security Info=False;database=REST_CLIENTE_A;server=.;User ID=sa;Password=***
+pathCertificado=certificados\cliente_a.p12
+passCertificado=clave_certificado_a
+
+; --- Cliente B ---
+[rnc_101234567]
+emp_codigo=2
+connectionString=Persist Security Info=False;database=REST_CLIENTE_B;server=.;User ID=sa;Password=***
+pathCertificado=certificados\cliente_b.p12
+passCertificado=clave_certificado_b
+
+; Instalación antigua (un solo cliente): todo en [general] sigue funcionando
+; sin llamar ConfigurarPorRnc desde Delphi.

@@ -1,0 +1,26 @@
+## Build
+bin/
+obj/
+packages/
+.vs/
+*.user
+*.suo
+*.cache
+
+## Secrets / local runtime
+config.ini
+**/config.ini
+certificados/
+**/certificados/
+LogsCliente/
+**/LogsCliente/
+semilla_*.xml
+
+## OS / junk
+__MACOSX/
+.DS_Store
+Thumbs.db
+*.pdb
+*.dll
+*.exe
+!packages.config

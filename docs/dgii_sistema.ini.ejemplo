@@ -1,0 +1,2 @@
+; OBSOLETO: use config.ini sección [sistema] junto a FacturacionElectronicaDGII.dll
+; Ver docs/config.ini.ejemplo_multi_rnc
