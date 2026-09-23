@@ -36,7 +36,8 @@ ALTER PROCEDURE [dbo].[SP_UPDATEDATOSLUGANIS]
     @tfa_codigo         VARCHAR(80)   = NULL,  -- solo para Facturas
     @sup_codigo         VARCHAR(80)   = NULL,  -- solo para Compras
     @codigoseguridad    VARCHAR(100)  = NULL,
-    @fechafirma         DATETIME      = NULL
+    @fechafirma         DATETIME      = NULL,
+    @pendiente          BIT           = 0   -- 1 = enviado, aún sin Aceptado/Rechazado (NO es error)
 )
 AS
 BEGIN
@@ -55,7 +56,7 @@ BEGIN
             filenameLuganis      = NULLIF(@filename,''),
             qrCodeLuganis        = NULLIF(@qrCode,''),
             AceptadoLuganis      = @aceptado,
-            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 ELSE 1 END,
+            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 WHEN ISNULL(@pendiente, 0) = 1 THEN 0 ELSE 1 END,
             codigoseguridad      = ISNULL(@codigoseguridad, f.codigoseguridad),
             fechafirma           = ISNULL(@fechafirma,     f.fechafirma),
             FechaEnvioLuganis    = GETDATE()
@@ -79,7 +80,7 @@ BEGIN
             filenameLuganis      = NULLIF(@filename,''),
             qrCodeLuganis        = NULLIF(@qrCode,''),
             AceptadoLuganis      = @aceptado,
-            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 ELSE 1 END,
+            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 WHEN ISNULL(@pendiente, 0) = 1 THEN 0 ELSE 1 END,
             codigoseguridad      = ISNULL(@codigoseguridad, pf.codigoseguridad),
             fechafirma           = ISNULL(@fechafirma,      pf.fechafirma),
             FechaEnvioLuganis    = GETDATE()
@@ -102,7 +103,7 @@ BEGIN
             filenameLuganis      = NULLIF(@filename,''),
             qrCodeLuganis        = NULLIF(@qrCode,''),
             AceptadoLuganis      = @aceptado,
-            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 ELSE 1 END,
+            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 WHEN ISNULL(@pendiente, 0) = 1 THEN 0 ELSE 1 END,
             codigoseguridad      = ISNULL(@codigoseguridad, d.codigoseguridad),
             fechafirma           = ISNULL(@fechafirma,      d.fechafirma),
             FechaEnvioLuganis    = GETDATE()
@@ -124,7 +125,7 @@ BEGIN
             filenameLuganis      = NULLIF(@filename,''),
             qrCodeLuganis        = NULLIF(@qrCode,''),
             AceptadoLuganis      = @aceptado,
-            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 ELSE 1 END,
+            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 WHEN ISNULL(@pendiente, 0) = 1 THEN 0 ELSE 1 END,
             codigoseguridad      = ISNULL(@codigoseguridad, d.codigoseguridad),
             fechafirma           = ISNULL(@fechafirma,      d.fechafirma),
             FechaEnvioLuganis    = GETDATE()
@@ -146,7 +147,7 @@ BEGIN
             filenameLuganis      = NULLIF(@filename,''),
             qrCodeLuganis        = NULLIF(@qrCode,''),
             AceptadoLuganis      = @aceptado,
-            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 ELSE 1 END,
+            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 WHEN ISNULL(@pendiente, 0) = 1 THEN 0 ELSE 1 END,
             codigoseguridad      = ISNULL(@codigoseguridad, d.codigoseguridad),
             fechafirma           = ISNULL(@fechafirma,      d.fechafirma),
             FechaEnvioLuganis    = GETDATE()
@@ -168,7 +169,7 @@ BEGIN
             filenameLuganis      = NULLIF(@filename,''),
             qrCodeLuganis        = NULLIF(@qrCode,''),
             AceptadoLuganis      = @aceptado,
-            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 ELSE 1 END,
+            Error_Luganis        = CASE WHEN @aceptado = 1 THEN 0 WHEN ISNULL(@pendiente, 0) = 1 THEN 0 ELSE 1 END,
             codigoseguridad      = ISNULL(@codigoseguridad, d.codigoseguridad),
             fechafirma           = ISNULL(@fechafirma,      d.fechafirma),
             FechaEnvioLuganis    = GETDATE()

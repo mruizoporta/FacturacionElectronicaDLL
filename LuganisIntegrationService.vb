@@ -192,6 +192,66 @@ Friend Class LuganisIntegrationService
         End Try
     End Function
 
+    ''' <summary>
+    ''' Consulta estado de un eNCF/trackId ya enviado, sin volver a mandar el TXT.
+    ''' Evita un segundo envío cuando el primero ya está Aceptado o Pendiente.
+    ''' </summary>
+    Friend Shared Function ConsultarEstadoExistente(
+        loginRequest As LuganisLoginRequest,
+        rncEmisor As String,
+        eNCF As String,
+        trackId As String,
+        Optional logDebug As Boolean = False
+    ) As LuganisResult
+        Try
+            LogLuganis("Reconsulta estado existente (sin reenviar). trackId=" & If(trackId, "(nulo)") & " eNCF=" & If(eNCF, ""), logDebug)
+            Dim loginResp As LuganisLoginResponse = LuganisApiClient.LoginAsync(loginRequest).GetAwaiter().GetResult()
+            If Not loginResp.Success OrElse String.IsNullOrWhiteSpace(loginResp.Token) Then
+                Return LuganisResult.Fail("LOGIN_FAILED", $"No se pudo autenticar en LUGANIS para reconsultar: {loginResp.ErrorMessage}", loginResp.RawResponse)
+            End If
+
+            Dim statusResp As LuganisStatusResponse = Nothing
+            If Not String.IsNullOrWhiteSpace(trackId) Then
+                statusResp = LuganisApiClient.GetStatusByTrackIdAsync(
+                    loginRequest.BaseUrl, loginResp.Token, loginRequest.DeviceId, trackId
+                ).GetAwaiter().GetResult()
+            ElseIf Not String.IsNullOrWhiteSpace(eNCF) Then
+                statusResp = LuganisApiClient.GetStatusByDocumentAsync(
+                    loginRequest.BaseUrl, loginResp.Token, loginRequest.DeviceId, rncEmisor, eNCF
+                ).GetAwaiter().GetResult()
+            Else
+                Return LuganisResult.Fail("SIN_REFERENCIA", "No hay trackId ni eNCF para reconsultar.")
+            End If
+
+            Dim clasif = ClasificarEstadoLuganis(statusResp)
+            Dim res As LuganisResult
+            If clasif.Aceptado.HasValue AndAlso clasif.Aceptado.Value Then
+                res = LuganisResult.Ok(Nothing, If(statusResp?.RawResponse, ""), Nothing, trackId, True)
+                res.Codigo = "OK"
+                res.Mensaje = "Ya aceptado; no se reenvía."
+            ElseIf clasif.Aceptado.HasValue AndAlso Not clasif.Aceptado.Value Then
+                res = LuganisResult.Fail(
+                    If(String.IsNullOrWhiteSpace(statusResp?.ResponseCode), "RECHAZADO", statusResp.ResponseCode),
+                    ConstruirMotivoRechazo(statusResp),
+                    If(statusResp?.RawResponse, ""),
+                    trackId,
+                    False)
+            Else
+                res = LuganisResult.Ok(Nothing, If(statusResp?.RawResponse, ""), Nothing, trackId, Nothing)
+                res.Codigo = "PENDIENTE"
+                res.Mensaje = "Documento en estado Pendiente (aún no Aceptado ni Rechazado). No se reenvía."
+            End If
+            If statusResp IsNot Nothing AndAlso Not String.IsNullOrWhiteSpace(statusResp.Status) Then
+                res.EstadoLuganis = statusResp.Status.Trim()
+            End If
+            LogLuganis("Reconsulta: " & clasif.Resumen & " estado=" & If(res.EstadoLuganis, ""), True)
+            Return res
+        Catch ex As Exception
+            Helper.RegistrarLogCliente("[LUGANIS] EXCEPCION ConsultarEstadoExistente: " & ex.ToString())
+            Return LuganisResult.Fail("EXCEPTION", ex.Message)
+        End Try
+    End Function
+
     Private Structure ClasificacionEstadoLuganis
         Public Aceptado As Boolean?
         Public EsFinal As Boolean
