@@ -536,11 +536,17 @@ ORDER BY b.Fecha_Envio DESC;"
         Public Property Encf As String
         Public Property SecuenciaUtilizada As Boolean
         Public Property Aceptado As Boolean
+        Public Property EsPendiente As Boolean
+        Public Property EsRechazado As Boolean
 
         Public Function MensajeParaUsuario() As String
             If Aceptado Then
                 If Not String.IsNullOrWhiteSpace(Mensaje) Then Return Mensaje
                 Return "Aceptado por la DGII"
+            End If
+            If EsPendiente Then
+                If Not String.IsNullOrWhiteSpace(Mensaje) Then Return "Pendiente: " & Mensaje
+                Return "Pendiente: enviado, aún no Aceptado/Rechazado"
             End If
             Dim titulo = If(String.IsNullOrWhiteSpace(Estado), "Rechazado", Estado)
             If String.IsNullOrWhiteSpace(Mensaje) Then Return titulo
@@ -594,13 +600,66 @@ ORDER BY b.Fecha_Envio DESC;"
             r.Mensaje = respuestaConsulta
         End Try
 
-        r.Aceptado =
-            String.Equals(r.Estado, "Aceptado", StringComparison.OrdinalIgnoreCase) OrElse
-            String.Equals(r.Estado, "Aceptado Condicional", StringComparison.OrdinalIgnoreCase)
-        If r.Estado = "No procesado" OrElse r.Estado = "" OrElse r.Estado = "Desconocido" Then
-            r.Aceptado = False
-        End If
+        r.Aceptado = EsEstadoAceptadoDgii(r.Estado)
+        r.EsPendiente = EsEstadoPendienteDgii(r.Estado)
+        r.EsRechazado = EsEstadoRechazadoDgii(r.Estado)
         Return r
+    End Function
+
+    Public Shared Function EsEstadoAceptadoDgii(estado As String) As Boolean
+        Dim e = If(estado, "").Trim()
+        Return String.Equals(e, "Aceptado", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(e, "Aceptado Condicional", StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    Public Shared Function EsEstadoRechazadoDgii(estado As String) As Boolean
+        Dim e = If(estado, "").Trim()
+        Return String.Equals(e, "Rechazado", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(e, "Rejected", StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    Public Shared Function EsEstadoPendienteDgii(estado As String) As Boolean
+        If EsEstadoAceptadoDgii(estado) OrElse EsEstadoRechazadoDgii(estado) Then Return False
+        Dim e = If(estado, "").Trim()
+        If e = "" Then Return True
+        Return String.Equals(e, "No procesado", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(e, "Desconocido", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(e, "Pendiente", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(e, "En Proceso", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(e, "En proceso", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(e, "Enviado", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(e, "Procesando", StringComparison.OrdinalIgnoreCase) OrElse
+               String.Equals(e, "En proceso de validación", StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    ''' <summary>
+    ''' Pendiente/timeout no quema secuencia ni marca Error_DGII en SP_UPDATEDATOSDGI*
+    ''' (esos SP ponen Error=1 cuando aceptado=0 AND secuenciaUtilizada=1).
+    ''' </summary>
+    Public Shared Sub AjustarPersistenciaPendiente(ByRef aceptado As Integer, ByRef secuenciaUtilizada As Boolean, estado As String)
+        If EsEstadoAceptadoDgii(estado) Then
+            aceptado = 1
+            Return
+        End If
+        aceptado = 0
+        If EsEstadoPendienteDgii(estado) Then
+            secuenciaUtilizada = False
+        End If
+    End Sub
+
+    Public Shared Function DocumentoYaAceptado(estado As DocumentoEncfEstado) As Boolean
+        If estado Is Nothing Then Return False
+        Return (estado.AceptadoDGII.HasValue AndAlso estado.AceptadoDGII.Value) OrElse
+               (estado.AceptadoLuganis.HasValue AndAlso estado.AceptadoLuganis.Value)
+    End Function
+
+    Public Shared Function DocumentoYaTransmitido(estado As DocumentoEncfEstado) As Boolean
+        If estado Is Nothing Then Return False
+        If estado.EnviadoDGII.HasValue AndAlso estado.EnviadoDGII.Value Then Return True
+        If Not String.IsNullOrWhiteSpace(estado.TrackIdLuganis) Then Return True
+        If estado.SecuenciaUtilizadaDGI.HasValue AndAlso estado.SecuenciaUtilizadaDGI.Value AndAlso
+           Not String.IsNullOrWhiteSpace(estado.ENCF) Then Return True
+        Return False
     End Function
 
     ''' <summary>JSON para Delphi: ok, message (error legible), estado, codigo, encf, trackId.</summary>
@@ -610,7 +669,7 @@ ORDER BY b.Fecha_Envio DESC;"
     ) As String
         If parseada Is Nothing Then parseada = New DgiiEstadoRespuesta()
         Dim payload = New With {
-            .ok = parseada.Aceptado,
+            .ok = parseada.Aceptado OrElse parseada.EsPendiente,
             .estado = parseada.Estado,
             .message = parseada.MensajeParaUsuario(),
             .mensaje = parseada.Mensaje,
@@ -618,9 +677,69 @@ ORDER BY b.Fecha_Envio DESC;"
             .trackId = parseada.TrackId,
             .encf = parseada.Encf,
             .secuenciaUtilizada = parseada.SecuenciaUtilizada,
+            .pendiente = parseada.EsPendiente,
+            .rechazado = parseada.EsRechazado,
             .rawResponse = rawResponse
         }
         Return JsonConvert.SerializeObject(payload)
+    End Function
+
+    Public Class BitacoraDgiiUltimo
+        Public Property Estado As String
+        Public Property TrackId As String
+        Public Property CodigoError As String
+        Public Property MensajeError As String
+    End Class
+
+    Public Shared Function ObtenerUltimaBitacoraDgii(cadenaConexion As String, doc As EncfDocumentoRef) As BitacoraDgiiUltimo
+        If doc Is Nothing OrElse String.IsNullOrWhiteSpace(cadenaConexion) Then Return Nothing
+        Dim sql As String
+        Dim tipoBitacora = ResolverTipoBitacoraTicket(doc.TipoDocumento.Equals(TipoEncfResBar, StringComparison.OrdinalIgnoreCase))
+        If doc.TipoDocumento.Equals(TipoEncfPos, StringComparison.OrdinalIgnoreCase) OrElse
+           doc.TipoDocumento.Equals(TipoEncfResBar, StringComparison.OrdinalIgnoreCase) Then
+            sql =
+"SELECT TOP (1) b.Estado, b.trackingID, b.CodigoError, b.MensajeError
+FROM dbo.BitacoraFacturacionElectronicaDGII b
+WHERE b.emp_codigo = @emp AND b.fac_numero = @fac AND b.usu_codigo = @usu AND b.caja = @caja
+  AND (b.tipo = @tipo_bit OR b.tipo IS NULL)
+ORDER BY b.Fecha_Envio DESC;"
+        Else
+            sql =
+"SELECT TOP (1) b.Estado, b.trackingID, b.CodigoError, b.MensajeError
+FROM dbo.BitacoraFacturacionElectronicaDGII b
+WHERE b.emp_codigo = @emp
+  AND LTRIM(RTRIM(CONVERT(VARCHAR(30), b.fac_numero))) = LTRIM(RTRIM(@fac))
+ORDER BY b.Fecha_Envio DESC;"
+        End If
+        Try
+            Using conn As New SqlConnection(cadenaConexion)
+                Using cmd As New SqlCommand(sql, conn)
+                    cmd.Parameters.Add("@emp", SqlDbType.Int).Value = doc.EmpCodigo
+                    Dim numTxt = If(Not String.IsNullOrWhiteSpace(doc.DocNumeroStr), doc.DocNumeroStr,
+                                    If(doc.DocNumero.HasValue, doc.DocNumero.Value.ToString(), "0"))
+                    cmd.Parameters.Add("@fac", SqlDbType.VarChar, 30).Value = numTxt
+                    If doc.TipoDocumento.Equals(TipoEncfPos, StringComparison.OrdinalIgnoreCase) OrElse
+                       doc.TipoDocumento.Equals(TipoEncfResBar, StringComparison.OrdinalIgnoreCase) Then
+                        cmd.Parameters.Add("@tipo_bit", SqlDbType.VarChar, 30).Value = tipoBitacora
+                        cmd.Parameters.Add("@usu", SqlDbType.VarChar, 50).Value = If(doc.UsuCodigo, 0).ToString()
+                        cmd.Parameters.Add("@caja", SqlDbType.VarChar, 50).Value = If(doc.CajaCodigo, 0).ToString()
+                    End If
+                    conn.Open()
+                    Using r = cmd.ExecuteReader()
+                        If Not r.Read() Then Return Nothing
+                        Return New BitacoraDgiiUltimo With {
+                            .Estado = If(r.IsDBNull(0), Nothing, Convert.ToString(r.GetValue(0))),
+                            .TrackId = If(r.IsDBNull(1), Nothing, Convert.ToString(r.GetValue(1))),
+                            .CodigoError = If(r.IsDBNull(2), Nothing, Convert.ToString(r.GetValue(2))),
+                            .MensajeError = If(r.IsDBNull(3), Nothing, Convert.ToString(r.GetValue(3)))
+                        }
+                    End Using
+                End Using
+            End Using
+        Catch ex As Exception
+            RegistrarLogCliente("ObtenerUltimaBitacoraDgii: " & ex.Message)
+            Return Nothing
+        End Try
     End Function
 
     ''' <summary>Lee Parametros.Usa_FacturacionElectronica para la empresa (DashA).</summary>

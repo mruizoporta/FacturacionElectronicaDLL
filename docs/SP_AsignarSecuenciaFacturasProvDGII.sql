@@ -95,19 +95,10 @@ BEGIN
 
         IF @eNCFActual IS NOT NULL
         BEGIN
-            IF (@SecuenciaUsada = 0)
-            BEGIN
-                SET @eNCF = @eNCFActual;
-                COMMIT TRAN;
-                RETURN;
-            END;
-
-            IF (@TieneError = 0 AND @Aceptada = 1)
-            BEGIN
-                SET @eNCF = @eNCFActual;
-                COMMIT TRAN;
-                RETURN;
-            END;
+            /* Ya hay eNCF: reutilizar SIEMPRE (evita duplicados). */
+            SET @eNCF = @eNCFActual;
+            COMMIT TRAN;
+            RETURN;
         END;
 
         DECLARE @nuevoENCF VARCHAR(50);

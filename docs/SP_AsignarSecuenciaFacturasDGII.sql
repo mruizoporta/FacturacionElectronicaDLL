@@ -60,19 +60,14 @@ BEGIN
 
         IF @eNCFActual IS NOT NULL
         BEGIN
-            IF (@SecuenciaUsada = 0)
-            BEGIN
-                SET @eNCF = @eNCFActual;
-                COMMIT TRAN;
-                RETURN;
-            END;
-
-            IF (@TieneError = 0 AND @Aceptada = 1)
-            BEGIN
-                SET @eNCF = @eNCFActual;
-                COMMIT TRAN;
-                RETURN;
-            END;
+            /* Ya hay eNCF: reutilizar SIEMPRE.
+               Si el primer envío fue aceptado en DGII y acá se marcó error
+               (timeout / Pendiente / No procesado), emitir otro número
+               deja dos e-CF aceptados (duplicado).
+               Para forzar uno nuevo hay que limpiar Facturas.eNCF. */
+            SET @eNCF = @eNCFActual;
+            COMMIT TRAN;
+            RETURN;
         END;
 
         DECLARE @nuevoENCF VARCHAR(50);

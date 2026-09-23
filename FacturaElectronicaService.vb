@@ -340,6 +340,12 @@ Public Class FacturaElectronicaService
             Dim xmlFactura As XmlDocument
             Seguridad.ObtenerToken()
 
+            Dim jsonYaEnviado = IntentarReusarEnvioExistenteDgii(
+                emp, suc, facNumero, facForma, tfaCodigo, tipoECF, False)
+            If Not String.IsNullOrWhiteSpace(jsonYaEnviado) Then
+                Return jsonYaEnviado
+            End If
+
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDGII(cadenaConexion,
                                                      Convert.ToInt32(emp),
                                                      Convert.ToInt32(suc),
@@ -505,6 +511,25 @@ Public Class FacturaElectronicaService
                 Return errorJson
             End If
 
+            Dim loginRequestPre As New LuganisLoginRequest With {
+                .BaseUrl = baseUrl,
+                .CompanyCode = companyCode,
+                .Username = username,
+                .Password = password,
+                .AppVersion = appVersion,
+                .Os = os,
+                .DeviceId = deviceId,
+                .Latitude = latitude,
+                .Longitude = longitude,
+                .ProviderIpAddress = providerIpAddress
+            }
+            Dim jsonLugYaEnviado = IntentarReusarEnvioExistenteLuganis(
+                emp, suc, facNumero, facForma, tfaCodigo, tipoECF, isNotaCredito, supCodigo,
+                empRnc, loginRequestPre, logDebug)
+            If Not String.IsNullOrWhiteSpace(jsonLugYaEnviado) Then
+                Return jsonLugYaEnviado
+            End If
+
             If logDebug Then Helper.RegistrarLogCliente("[LUGANIS] Paso 1: Generando XML (GenerarXmlFacturaParaLuganis)...")
             ' 1. Generar el XML de la factura utilizando la misma lÃ³gica DGII,
             ' pero aislada en un helper especÃ­fico para LUGANIS.
@@ -663,9 +688,9 @@ Public Class FacturaElectronicaService
             If logDebug Then Helper.RegistrarLogCliente("[LUGANIS] Paso 5: Construyendo JSON de respuesta...")
 
             Dim tipoDocLug As String = ResolverTipoDocumentoDesdeEcf(tipoECF, isNotaCredito)
-            Dim okFinal As Boolean = resultado.Success AndAlso aceptadoParaBD
+            Dim okFinal As Boolean = resultado.Success AndAlso (aceptadoParaBD OrElse esPendiente)
             ' Pendiente no es rechazo; solo rechazo real o fallo de envío
-            Dim rechazadoLug As Boolean = esRechazoReal OrElse (Not resultado.Success)
+            Dim rechazadoLug As Boolean = esRechazoReal OrElse (Not resultado.Success AndAlso Not esPendiente)
             Dim msgUsuario As String = ResolverMensajeUsuarioLuganis(
                 cadenaConexion, resultado, aceptadoParaBD, tipoDocLug, emp, suc, facNumero, facForma, tfaCodigo, supCodigo)
             If esPendiente AndAlso String.IsNullOrWhiteSpace(msgUsuario) Then
@@ -807,6 +832,7 @@ Public Class FacturaElectronicaService
                 savedFilePath = rutaCompleta
             End If
 
+            Dim esPendienteDev As Boolean = (Not resultado.AceptadoPorLuganis.HasValue) AndAlso resultado.Success
             Dim aceptadoParaBD As Boolean = If(resultado.AceptadoPorLuganis.HasValue, resultado.AceptadoPorLuganis.Value, False)
             Dim qrCodeLuganis As String = Nothing
             If aceptadoParaBD Then
@@ -837,13 +863,14 @@ Public Class FacturaElectronicaService
                     tfaCodigo:="",
                     supCodigo:="",
                     isNotaCredito:=False,
-                    mensajeRechazo:=If(Not aceptadoParaBD, resultado.Mensaje, Nothing)
+                    mensajeRechazo:=If(Not aceptadoParaBD AndAlso Not esPendienteDev, resultado.Mensaje, If(esPendienteDev, "PENDIENTE: " & If(resultado.Mensaje, ""), Nothing)),
+                    esPendiente:=esPendienteDev
                 )
             Catch exSP As Exception
                 Helper.RegistrarLogCliente("[LUGANIS] ERROR SP_UPDATEDATOSLUGANIS devoluciÃ³n: " & exSP.Message)
             End Try
 
-            Dim okFinal As Boolean = resultado.Success AndAlso aceptadoParaBD
+            Dim okFinal As Boolean = resultado.Success AndAlso (aceptadoParaBD OrElse esPendienteDev)
             Dim msgUsuario As String = ResolverMensajeUsuarioLuganis(
                 cadenaConexion, resultado, aceptadoParaBD, "DEVOLUCION", emp, suc, devNumero, "", "", "")
             Dim errorDetail As String = Nothing
@@ -864,8 +891,8 @@ Public Class FacturaElectronicaService
                 errorDetail:=errorDetail,
                 savedFilePath:=savedFilePath,
                 estadoLuganis:=resultado.EstadoLuganis,
-                rechazado:=Not okFinal,
-                codigoError:=If(Not okFinal, resultado.Codigo, Nothing),
+                rechazado:=Not okFinal AndAlso Not esPendienteDev,
+                codigoError:=If(Not okFinal, resultado.Codigo, If(esPendienteDev, "PENDIENTE", Nothing)),
                 mensajeRechazo:=If(Not okFinal, msgUsuario, Nothing))
         Catch ex As Exception
             Helper.RegistrarLogCliente("[LUGANIS] EXCEPCION EnviarDevolucionLuganis: " & ex.ToString())
@@ -1114,32 +1141,55 @@ Public Class FacturaElectronicaService
             New SqlParameter("@tfa_codigo", If(String.IsNullOrEmpty(tfaCodigo), CObj(DBNull.Value), CObj(tfaCodigo))),
             New SqlParameter("@sup_codigo", If(String.IsNullOrEmpty(supCodigo), CObj(DBNull.Value), CObj(supCodigo))),
             New SqlParameter("@codigoseguridad", If(String.IsNullOrEmpty(codigoSegDesdeQr), CObj(DBNull.Value), CObj(codigoSegDesdeQr))),
-            New SqlParameter("@fechafirma", If(fechaFirmaDesdeQr.HasValue, CType(fechaFirmaDesdeQr.Value, Object), CObj(DBNull.Value)))
+            New SqlParameter("@fechafirma", If(fechaFirmaDesdeQr.HasValue, CType(fechaFirmaDesdeQr.Value, Object), CObj(DBNull.Value))),
+            New SqlParameter("@pendiente", If(esPendiente, 1, 0))
         }
-        Helper.EjecutarProcedimientoAlmacenado(cadenaConexion, "SP_UPDATEDATOSLUGANIS", p)
+        Try
+            Helper.EjecutarProcedimientoAlmacenado(cadenaConexion, "SP_UPDATEDATOSLUGANIS", p)
+        Catch exPendParam As Exception
+            If esPendiente Then
+                Helper.RegistrarLogCliente("[LUGANIS] SP sin @pendiente; reintento sin el parámetro: " & exPendParam.Message)
+                Dim pOld(p.Length - 2) As SqlParameter
+                Array.Copy(p, pOld, p.Length - 1)
+                Helper.EjecutarProcedimientoAlmacenado(cadenaConexion, "SP_UPDATEDATOSLUGANIS", pOld)
+            Else
+                Throw
+            End If
+        End Try
 
-        ' SP pone Error_Luganis=1 cuando @aceptado=0. En Pendiente eso es incorrecto: limpiar error.
-        If esPendiente AndAlso String.Equals(tipoDoc, "FACTURA", StringComparison.OrdinalIgnoreCase) Then
+        ' SP viejo pone Error_Luganis=1 cuando @aceptado=0. En Pendiente limpiar error.
+        If esPendiente Then
             Try
-                Using conn As New SqlClient.SqlConnection(cadenaConexion)
-                    Using cmd As New SqlClient.SqlCommand(
-"UPDATE dbo.Facturas
-SET Error_Luganis = 0,
-    AceptadoLuganis = 0
-WHERE emp_codigo = @emp AND suc_codigo = @suc
-  AND fac_numero = CAST(@fac AS INT)
-  AND fac_forma = ISNULL(@forma, fac_forma)
-  AND tfa_codigo = ISNULL(@tfa, tfa_codigo);", conn)
-                        cmd.Parameters.AddWithValue("@emp", CInt(emp))
-                        cmd.Parameters.AddWithValue("@suc", CInt(suc))
-                        cmd.Parameters.AddWithValue("@fac", facNumero)
-                        cmd.Parameters.AddWithValue("@forma", If(String.IsNullOrEmpty(facForma), CObj(DBNull.Value), CObj(facForma)))
-                        cmd.Parameters.AddWithValue("@tfa", If(String.IsNullOrEmpty(tfaCodigo), CObj(DBNull.Value), CObj(tfaCodigo)))
-                        conn.Open()
-                        Dim n = cmd.ExecuteNonQuery()
-                        Helper.RegistrarLogCliente("[LUGANIS] Pendiente: Error_Luganis limpiado a 0 (filas=" & n & ").")
+                Dim sqlPend As String = Nothing
+                Select Case tipoDoc.ToUpperInvariant()
+                    Case "FACTURA"
+                        sqlPend = "UPDATE dbo.Facturas SET Error_Luganis = 0, AceptadoLuganis = 0 WHERE emp_codigo=@emp AND suc_codigo=@suc AND fac_numero=CAST(@fac AS INT) AND fac_forma=ISNULL(@forma, fac_forma) AND tfa_codigo=ISNULL(@tfa, tfa_codigo);"
+                    Case "COMPRA"
+                        sqlPend = "UPDATE dbo.ProvFacturas SET Error_Luganis = 0, AceptadoLuganis = 0 WHERE emp_codigo=@emp AND suc_codigo=@suc AND fac_numero=@fac AND sup_codigo=ISNULL(@sup, sup_codigo);"
+                    Case "DESEMBOLSO"
+                        sqlPend = "UPDATE dbo.Desembolsos SET Error_Luganis = 0, AceptadoLuganis = 0 WHERE emp_codigo=@emp AND suc_codigo=@suc AND des_numero=CAST(@fac AS INT);"
+                    Case "DEVOLUCION", "DEV"
+                        sqlPend = "UPDATE dbo.Devolucion SET Error_Luganis = 0, AceptadoLuganis = 0 WHERE emp_codigo=@emp AND suc_codigo=@suc AND dev_numero=CAST(@fac AS INT);"
+                    Case "NOTACREDITO", "NC"
+                        sqlPend = "UPDATE dbo.NotasCredito SET Error_Luganis = 0, AceptadoLuganis = 0 WHERE emp_codigo=@emp AND suc_codigo=@suc AND ncr_numero=CAST(@fac AS INT);"
+                    Case "NOTADEBITO", "ND"
+                        sqlPend = "UPDATE dbo.NotasDebito SET Error_Luganis = 0, AceptadoLuganis = 0 WHERE emp_codigo=@emp AND suc_codigo=@suc AND nde_numero=CAST(@fac AS INT);"
+                End Select
+                If sqlPend IsNot Nothing Then
+                    Using conn As New SqlClient.SqlConnection(cadenaConexion)
+                        Using cmd As New SqlClient.SqlCommand(sqlPend, conn)
+                            cmd.Parameters.AddWithValue("@emp", CInt(emp))
+                            cmd.Parameters.AddWithValue("@suc", CInt(suc))
+                            cmd.Parameters.AddWithValue("@fac", facNumero)
+                            cmd.Parameters.AddWithValue("@forma", If(String.IsNullOrEmpty(facForma), CObj(DBNull.Value), CObj(facForma)))
+                            cmd.Parameters.AddWithValue("@tfa", If(String.IsNullOrEmpty(tfaCodigo), CObj(DBNull.Value), CObj(tfaCodigo)))
+                            cmd.Parameters.AddWithValue("@sup", If(String.IsNullOrEmpty(supCodigo), CObj(DBNull.Value), CObj(supCodigo)))
+                            conn.Open()
+                            Dim n = cmd.ExecuteNonQuery()
+                            Helper.RegistrarLogCliente("[LUGANIS] Pendiente: Error_Luganis limpiado a 0 (filas=" & n & ").")
+                        End Using
                     End Using
-                End Using
+                End If
             Catch exPend As Exception
                 Helper.RegistrarLogCliente("[LUGANIS] No se pudo limpiar Error_Luganis en Pendiente: " & exPend.Message)
             End Try
@@ -1304,6 +1354,12 @@ WHERE emp_codigo = @emp AND suc_codigo = @suc
         If aceptadoParaBd AndAlso resultado.Success Then
             Return If(String.IsNullOrWhiteSpace(resultado.Mensaje), "Aceptado por LUGANIS", resultado.Mensaje)
         End If
+        If String.Equals(If(resultado.Codigo, ""), "PENDIENTE", StringComparison.OrdinalIgnoreCase) OrElse
+           String.Equals(If(resultado.EstadoLuganis, ""), "Pendiente", StringComparison.OrdinalIgnoreCase) Then
+            Return If(String.IsNullOrWhiteSpace(resultado.Mensaje),
+                      "Documento enviado a LUGANIS; estado Pendiente (aún no Aceptado/Rechazado).",
+                      resultado.Mensaje)
+        End If
 
         Dim msg = If(String.IsNullOrWhiteSpace(resultado.Mensaje), "", resultado.Mensaje.Trim())
         If Not String.IsNullOrWhiteSpace(resultado.EstadoLuganis) AndAlso
@@ -1322,6 +1378,243 @@ WHERE emp_codigo = @emp AND suc_codigo = @suc
         If Not String.IsNullOrWhiteSpace(msg) Then Return msg
         If Not resultado.Success Then Return "Error al enviar a LUGANIS"
         Return "Documento rechazado por LUGANIS"
+    End Function
+
+    ''' <summary>
+    ''' Si el documento ya fue aceptado o quedó pendiente/enviado, no reenvía
+    ''' (evita un segundo eNCF cuando el primero sí fue aceptado en DGII).
+    ''' Devuelve JSON listo para Delphi, o Nothing si hay que enviar.
+    ''' </summary>
+    Private Shared Function IntentarReusarEnvioExistenteDgii(
+        emp As String,
+        suc As String,
+        facNumero As String,
+        facForma As String,
+        tfaCodigo As String,
+        tipoECF As String,
+        isNotaCredito As Boolean
+    ) As String
+        Try
+            Dim empInt As Integer, sucInt As Integer, tfaInt As Integer, facInt As Integer
+            If Not Integer.TryParse(emp, empInt) OrElse Not Integer.TryParse(suc, sucInt) Then Return Nothing
+            Integer.TryParse(If(tfaCodigo, "0"), tfaInt)
+            If Not Integer.TryParse(facNumero, facInt) Then Return Nothing
+            Dim forma1 = If(facForma, "").Trim()
+            If forma1.Length > 1 Then forma1 = forma1.Substring(0, 1)
+
+            Dim estadoPrev = Helper.ObtenerEstadoEncfFactura(cadenaConexion, empInt, forma1, tfaInt, facInt, sucInt)
+            If Helper.DocumentoYaAceptado(estadoPrev) Then
+                Helper.RegistrarLogCliente("[DGII] Ya aceptada. No se reenvía. eNCF=" & If(estadoPrev.ENCF, ""))
+                Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
+                    .Estado = "Aceptado",
+                    .Aceptado = True,
+                    .Encf = estadoPrev.ENCF,
+                    .Mensaje = "Documento ya aceptado. No se reenvía para evitar duplicado."
+                })
+            End If
+
+            Dim docRef = Helper.EncfDocumentoRef.Factura(empInt, sucInt, forma1, tfaInt, facInt)
+            Dim bit = Helper.ObtenerUltimaBitacoraDgii(cadenaConexion, docRef)
+            Dim trackExistente = If(bit IsNot Nothing, If(bit.TrackId, "").Trim(), "")
+            If String.IsNullOrWhiteSpace(trackExistente) Then trackExistente = If(estadoPrev.TrackIdLuganis, "").Trim()
+
+            If String.IsNullOrWhiteSpace(trackExistente) AndAlso Not Helper.DocumentoYaTransmitido(estadoPrev) Then
+                Return Nothing
+            End If
+
+            If Not String.IsNullOrWhiteSpace(trackExistente) Then
+                Try
+                    Dim token As String = GlobalVariables.token
+                    If String.IsNullOrWhiteSpace(token) Then
+                        Seguridad.ObtenerToken()
+                        token = GlobalVariables.token
+                    End If
+                    Dim respExist = ConsultarEstadoConReintentos(trackExistente, token)
+                    Dim parsedExist = Helper.ParsearRespuestaDgii(respExist)
+                    If parsedExist.Aceptado Then
+                        Helper.RegistrarLogCliente("[DGII] Reconsulta: ACEPTADO. No se reenvía. trackId=" & trackExistente)
+                        Return ProcesarRespuestaAPISoloEstado(
+                            cadenaConexion, emp, suc, facNumero,
+                            If(facForma, ""), If(tfaCodigo, ""), If(tipoECF, ""),
+                            respExist, "", isNotaCredito)
+                    End If
+                    If parsedExist.EsPendiente Then
+                        Helper.RegistrarLogCliente("[DGII] Reconsulta: PENDIENTE. No se reenvía ni se asigna otro eNCF. trackId=" & trackExistente)
+                        Return ProcesarRespuestaAPISoloEstado(
+                            cadenaConexion, emp, suc, facNumero,
+                            If(facForma, ""), If(tfaCodigo, ""), If(tipoECF, ""),
+                            respExist, "", isNotaCredito)
+                    End If
+                    If parsedExist.EsRechazado AndAlso
+                       (String.Equals(If(parsedExist.CodigoMensaje, "").Trim(), "1209", StringComparison.OrdinalIgnoreCase) OrElse
+                        ContainsSecuenciaYaUsada(parsedExist.Mensaje)) Then
+                        Helper.RegistrarLogCliente("[DGII] Reconsulta 1209: la secuencia ya está en DGII. No se emite otro eNCF.")
+                        parsedExist.EsPendiente = True
+                        parsedExist.EsRechazado = False
+                        parsedExist.Mensaje = "Secuencia ya utilizada en DGII (posible aceptación previa). No se reenvía."
+                        Return Helper.ConstruirJsonRespuestaOperacion(parsedExist, respExist)
+                    End If
+                Catch exCons As Exception
+                    Helper.RegistrarLogCliente("[DGII] Reconsulta previa falló: " & exCons.Message)
+                    If Helper.DocumentoYaTransmitido(estadoPrev) Then
+                        Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
+                            .Estado = "Pendiente",
+                            .EsPendiente = True,
+                            .Encf = estadoPrev.ENCF,
+                            .TrackId = trackExistente,
+                            .Mensaje = "Ya fue enviado; no se pudo confirmar el estado. No se reenvía para evitar duplicado."
+                        })
+                    End If
+                End Try
+            ElseIf Helper.DocumentoYaTransmitido(estadoPrev) Then
+                Helper.RegistrarLogCliente("[DGII] Ya transmitida sin trackId consultable. Se reutiliza eNCF, no se emite otro.")
+            End If
+        Catch ex As Exception
+            Helper.RegistrarLogCliente("[DGII] IntentarReusarEnvioExistenteDgii EX: " & ex.Message)
+        End Try
+        Return Nothing
+    End Function
+
+    Private Shared Function IntentarReusarEnvioExistenteLuganis(
+        emp As String,
+        suc As String,
+        facNumero As String,
+        facForma As String,
+        tfaCodigo As String,
+        tipoECF As String,
+        isNotaCredito As Boolean,
+        supCodigo As String,
+        empRnc As String,
+        loginRequest As LuganisLoginRequest,
+        logDebug As Boolean
+    ) As String
+        Try
+            Dim empInt As Integer, sucInt As Integer, tfaInt As Integer, facInt As Integer
+            If Not Integer.TryParse(emp, empInt) OrElse Not Integer.TryParse(suc, sucInt) Then Return Nothing
+            Integer.TryParse(If(tfaCodigo, "0"), tfaInt)
+            If Not Integer.TryParse(facNumero, facInt) Then Return Nothing
+            Dim forma1 = If(facForma, "").Trim()
+            If forma1.Length > 1 Then forma1 = forma1.Substring(0, 1)
+
+            Dim estadoPrev = Helper.ObtenerEstadoEncfFactura(cadenaConexion, empInt, forma1, tfaInt, facInt, sucInt)
+            If Helper.DocumentoYaAceptado(estadoPrev) Then
+                Helper.RegistrarLogCliente("[LUGANIS] Ya aceptada. No se reenvía. eNCF=" & If(estadoPrev.ENCF, ""))
+                Return ConstruirJsonLuganis(
+                    ok:=True,
+                    message:="Documento ya aceptado. No se reenvía para evitar duplicado.",
+                    trackId:=estadoPrev.TrackIdLuganis,
+                    filename:=Nothing,
+                    txtContent:=Nothing,
+                    rawResponse:=Nothing,
+                    errorDetail:=Nothing,
+                    savedFilePath:=Nothing,
+                    estadoLuganis:="Aceptado",
+                    rechazado:=False)
+            End If
+
+            Dim track = If(estadoPrev.TrackIdLuganis, "").Trim()
+            Dim encfPrev = If(estadoPrev.ENCF, "").Trim()
+            If String.IsNullOrWhiteSpace(track) AndAlso String.IsNullOrWhiteSpace(encfPrev) Then Return Nothing
+            If String.IsNullOrWhiteSpace(track) AndAlso Not Helper.DocumentoYaTransmitido(estadoPrev) Then Return Nothing
+
+            Dim consulta = LuganisIntegrationService.ConsultarEstadoExistente(
+                loginRequest, empRnc, encfPrev, track, logDebug)
+
+            If consulta Is Nothing Then Return Nothing
+
+            If consulta.AceptadoPorLuganis.HasValue AndAlso consulta.AceptadoPorLuganis.Value Then
+                Try
+                    ActualizarDatosLuganisEnBD(
+                        cadenaConexion:=cadenaConexion,
+                        tipoECF:=tipoECF,
+                        emp:=emp,
+                        suc:=suc,
+                        facNumero:=facNumero,
+                        encf:=encfPrev,
+                        trackId:=If(consulta.TrackId, track),
+                        aceptado:=True,
+                        filename:=consulta.FileName,
+                        qrCode:=Nothing,
+                        facForma:=facForma,
+                        tfaCodigo:=tfaCodigo,
+                        supCodigo:=supCodigo,
+                        isNotaCredito:=isNotaCredito,
+                        mensajeRechazo:=Nothing,
+                        esPendiente:=False)
+                Catch exSp As Exception
+                    Helper.RegistrarLogCliente("[LUGANIS] Reconsulta aceptada, error al persistir: " & exSp.Message)
+                End Try
+                Return ConstruirJsonLuganis(
+                    ok:=True,
+                    message:="Ya aceptado por LUGANIS/DGII. No se reenvía.",
+                    trackId:=If(consulta.TrackId, track),
+                    filename:=consulta.FileName,
+                    txtContent:=Nothing,
+                    rawResponse:=consulta.RawResponse,
+                    errorDetail:=Nothing,
+                    savedFilePath:=Nothing,
+                    estadoLuganis:=If(consulta.EstadoLuganis, "Aceptado"),
+                    rechazado:=False)
+            End If
+
+            Dim esPendienteCons = (Not consulta.AceptadoPorLuganis.HasValue) AndAlso
+                (consulta.Success OrElse String.Equals(If(consulta.Codigo, ""), "PENDIENTE", StringComparison.OrdinalIgnoreCase))
+            If esPendienteCons AndAlso (consulta.Success OrElse Not String.IsNullOrWhiteSpace(track)) Then
+                Try
+                    ActualizarDatosLuganisEnBD(
+                        cadenaConexion:=cadenaConexion,
+                        tipoECF:=tipoECF,
+                        emp:=emp,
+                        suc:=suc,
+                        facNumero:=facNumero,
+                        encf:=encfPrev,
+                        trackId:=If(consulta.TrackId, track),
+                        aceptado:=False,
+                        filename:=consulta.FileName,
+                        qrCode:=Nothing,
+                        facForma:=facForma,
+                        tfaCodigo:=tfaCodigo,
+                        supCodigo:=supCodigo,
+                        isNotaCredito:=isNotaCredito,
+                        mensajeRechazo:="PENDIENTE: " & If(consulta.Mensaje, ""),
+                        esPendiente:=True)
+                Catch exSp2 As Exception
+                    Helper.RegistrarLogCliente("[LUGANIS] Reconsulta pendiente, error al persistir: " & exSp2.Message)
+                End Try
+                Return ConstruirJsonLuganis(
+                    ok:=True,
+                    message:="Documento ya enviado; estado Pendiente. No se reenvía para evitar duplicado.",
+                    trackId:=If(consulta.TrackId, track),
+                    filename:=consulta.FileName,
+                    txtContent:=Nothing,
+                    rawResponse:=consulta.RawResponse,
+                    errorDetail:=Nothing,
+                    savedFilePath:=Nothing,
+                    estadoLuganis:=If(consulta.EstadoLuganis, "Pendiente"),
+                    rechazado:=False,
+                    codigoError:="PENDIENTE")
+            End If
+
+            If Not consulta.Success AndAlso Helper.DocumentoYaTransmitido(estadoPrev) AndAlso
+               Not (consulta.AceptadoPorLuganis.HasValue AndAlso Not consulta.AceptadoPorLuganis.Value) Then
+                Helper.RegistrarLogCliente("[LUGANIS] Reconsulta falló y el documento ya salió. No se reenvía.")
+                Return ConstruirJsonLuganis(
+                    ok:=True,
+                    message:="Ya fue enviado; no se pudo confirmar el estado. No se reenvía para evitar duplicado.",
+                    trackId:=track,
+                    filename:=Nothing,
+                    txtContent:=Nothing,
+                    rawResponse:=consulta.RawResponse,
+                    errorDetail:=consulta.Mensaje,
+                    savedFilePath:=Nothing,
+                    estadoLuganis:="Pendiente",
+                    rechazado:=False,
+                    codigoError:="PENDIENTE")
+            End If
+        Catch ex As Exception
+            Helper.RegistrarLogCliente("[LUGANIS] IntentarReusarEnvioExistenteLuganis EX: " & ex.Message)
+        End Try
+        Return Nothing
     End Function
 
     ''' <summary>
@@ -2799,11 +3092,8 @@ WHERE usu_codigo = @usu
             Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito)
         )
             ' ---------- ActualizaciÃ³n de BD: Aceptado o Rechazado ----------
-            Dim aceptado As Integer = If(String.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) Or String.Equals(estado, "Aceptado Condicional", StringComparison.OrdinalIgnoreCase), 1, 0)
-
-            If estado = "No procesado" Or estado = "" Or estado = "Desconocido" Then
-                aceptado = 0
-            End If
+            Dim aceptado As Integer = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
+            Helper.AjustarPersistenciaPendiente(aceptado, secuenciautilizada, estado)
 
             Select Case TipoeCF
                 Case "31", "32", "44", "45", "46"
@@ -2988,8 +3278,8 @@ WHERE usu_codigo = @usu
             Helper.InsertarBitacoraDGII(cadenaConexion, emp_codigo, facNumero, estado, trackId, codigoMensaje, mensajeError, "", fechaRec, "", "",
                 Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito))
 
-            Dim aceptado As Integer = If(String.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) Or String.Equals(estado, "Aceptado Condicional", StringComparison.OrdinalIgnoreCase), 1, 0)
-            If estado = "No procesado" Or estado = "" Or estado = "Desconocido" Then aceptado = 0
+            Dim aceptado As Integer = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
+            Helper.AjustarPersistenciaPendiente(aceptado, secuenciautilizada, estado)
 
             Dim codigoseguridadRecons As String = ""
             Dim fechaFirmaRecons As DateTime = DateTime.Now
@@ -3141,10 +3431,8 @@ WHERE usu_codigo = @usu
             Helper.InsertarBitacoraDGII(cadenaConexion, emp_codigo, ticket, estado, trackId, codigoMensaje, mensajeError, "", fechaRec, usu_codigo, caja,
                 Helper.ResolverTipoBitacoraTicket(esRestBar))
 
-            Dim aceptado As Integer = If(String.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) OrElse String.Equals(estado, "Aceptado Condicional", StringComparison.OrdinalIgnoreCase), 1, 0)
-            If estado = "No procesado" OrElse estado = "" OrElse estado = "Desconocido" Then
-                aceptado = 0
-            End If
+            Dim aceptado As Integer = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
+            Helper.AjustarPersistenciaPendiente(aceptado, secuenciautilizada, estado)
 
             Dim spName As String = If(esRestBar, "SP_UPDATEDATOSDGIRESBAR", "SP_UPDATEDATOSDGIPOS")
             Dim codigoseguridadRecons As String = ""
@@ -3271,13 +3559,10 @@ WHERE usu_codigo = @usu
         )
 
             ' ---------- ActualizaciÃ³n de BD: Aceptado o Rechazado ----------
-            Dim aceptado As Integer = If(String.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) Or String.Equals(estado, "Aceptado Condicional", StringComparison.OrdinalIgnoreCase), 1, 0)
+            Dim aceptado As Integer = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
+            Helper.AjustarPersistenciaPendiente(aceptado, secuenciautilizada, estado)
 
             Helper.RegistrarLogCliente("Entro al ProcesarRespuestaAPIPOS " + aceptado.ToString())
-
-            If estado = "No procesado" Or estado = "" Or estado = "Desconocido" Then
-                aceptado = 0
-            End If
 
             ' Montos_Ticket / Factura_RestBar: actualizar siempre que haya respuesta de consulta DGII,
             ' para cualquier TipoeCF (31, 32, 33, 34, 41, 45, 46, 47, etc.). El SP filtra por bitÃ¡cora.
@@ -8816,13 +9101,15 @@ SELECT @nuevo;"
                     End If
                 End If
             Catch
-                If estado = "No procesado" Or estado = "" Or estado = "Desconocido" Then
-                    aceptado = 0
-                End If
                 ' Si no era JSON vÃ¡lido, dejamos el texto crudo como mensaje
                 mensajeError = resestado
             End Try
             ' ----------------------------------------------------
+
+            Dim seqResumen As Boolean = If(secuenciaUtilizada.HasValue, secuenciaUtilizada.Value, False)
+            Dim aceptadoResumen As Integer = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
+            Helper.AjustarPersistenciaPendiente(aceptadoResumen, seqResumen, estado)
+            secuenciaUtilizada = seqResumen
 
             ' -------- BitÃ¡cora: siempre registrar --------
             ' Usa el estado parseado y el listado de mensajes
@@ -8840,8 +9127,7 @@ SELECT @nuevo;"
         )
 
             ' -------- ActualizaciÃ³n de datos locales --------
-            If String.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) Or
-                String.Equals(estado, "Aceptado Condicional", StringComparison.OrdinalIgnoreCase) Then
+            If aceptadoResumen = 1 Then
                 ' Aceptado => actualiza como ya lo hacÃ­as
                 Dim parametros As SqlParameter() = {
                 New SqlParameter("@emp_codigo", emp_codigo),
@@ -8992,12 +9278,10 @@ SELECT @nuevo;"
             End Try
             ' ----------------------------------------------------
 
-            If String.Equals(estado, "Aceptado", StringComparison.OrdinalIgnoreCase) OrElse
-               String.Equals(estado, "Aceptado Condicional", StringComparison.OrdinalIgnoreCase) Then
-                aceptado = 1
-            Else
-                aceptado = 0
-            End If
+            Dim seqResumenPos As Boolean = If(secuenciaUtilizada.HasValue, secuenciaUtilizada.Value, False)
+            aceptado = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
+            Helper.AjustarPersistenciaPendiente(aceptado, seqResumenPos, estado)
+            secuenciaUtilizada = seqResumenPos
 
             ' -------- BitÃ¡cora: siempre registrar --------
             ' Usa el estado parseado y el listado de mensajes

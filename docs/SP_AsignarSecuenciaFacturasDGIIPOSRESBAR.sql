@@ -78,23 +78,11 @@ BEGIN
 
         IF @eNCFActual IS NOT NULL
         BEGIN
-            /* Ya hay eNCF y NO se consumió secuencia: no generar otro */
-            IF (@SecuenciaUsada = 0)
-            BEGIN
-                SET @eNCF = LEFT(@eNCFActual, 50);
-                COMMIT TRAN;
-                RETURN;
-            END;
-
-            /* Sin error y aceptada por DGII: mismo eNCF */
-            IF (@TieneError = 0 AND @Aceptada = 1)
-            BEGIN
-                SET @eNCF = LEFT(@eNCFActual, 50);
-                COMMIT TRAN;
-                RETURN;
-            END;
-
-            /* Resto: eNCF previo + secuencia usada y no válido para reutilizar → nueva secuencia */
+            /* Ya hay eNCF: reutilizar SIEMPRE (evita duplicados si el
+               primer envío fue aceptado y acá se marcó error/pendiente). */
+            SET @eNCF = LEFT(@eNCFActual, 50);
+            COMMIT TRAN;
+            RETURN;
         END;
 
         DECLARE @nuevoENCF VARCHAR(100);
