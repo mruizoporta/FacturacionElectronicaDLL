@@ -780,6 +780,25 @@ Public Class FacturaElectronicaService
             End If
 
             CargarConfiguracion()
+            Dim loginRequestPreDev As New LuganisLoginRequest With {
+                .BaseUrl = baseUrl,
+                .CompanyCode = companyCode,
+                .Username = username,
+                .Password = password,
+                .AppVersion = appVersion,
+                .Os = os,
+                .DeviceId = deviceId,
+                .Latitude = latitude,
+                .Longitude = longitude,
+                .ProviderIpAddress = providerIpAddress
+            }
+            Dim empDL As Integer, sucDL As Integer, numDL As Integer
+            If Integer.TryParse(emp, empDL) AndAlso Integer.TryParse(suc, sucDL) AndAlso Integer.TryParse(devNumero, numDL) Then
+                Dim jsonLugDev = IntentarReusarEnvioExistenteLuganis(
+                    Helper.EncfDocumentoRef.Devolucion(empDL, sucDL, numDL),
+                    "34", False, "", "", "", empRnc, loginRequestPreDev, logDebug)
+                If Not String.IsNullOrWhiteSpace(jsonLugDev) Then Return jsonLugDev
+            End If
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDevolucionDGII(cadenaConexion, Convert.ToInt32(emp), Convert.ToInt32(suc), devNumero)
             If String.IsNullOrWhiteSpace(nuevoENCF) AndAlso Not String.IsNullOrWhiteSpace(eNCF) Then
                 nuevoENCF = eNCF.Trim()
@@ -1385,6 +1404,54 @@ Public Class FacturaElectronicaService
     ''' (evita un segundo eNCF cuando el primero sí fue aceptado en DGII).
     ''' Devuelve JSON listo para Delphi, o Nothing si hay que enviar.
     ''' </summary>
+    Private Const MsgYaEnviadoNoReenviar As String = "OK: ya enviado; no se reenvía para evitar duplicado."
+
+    Private Shared Function EncFYaAsignado(estado As Helper.DocumentoEncfEstado) As String
+        If estado Is Nothing Then Return ""
+        Return If(estado.ENCF, "").Trim()
+    End Function
+
+    Private Shared Function ConstruirDocReuso(
+        empInt As Integer,
+        sucInt As Integer,
+        facInt As Integer,
+        forma1 As String,
+        tfaInt As Integer,
+        tipoECF As String,
+        isNotaCredito As Boolean,
+        supCodigo As String,
+        facNumero As String
+    ) As Helper.EncfDocumentoRef
+        Dim tipo = If(tipoECF, "").Trim()
+        If isNotaCredito Then
+            Return Helper.EncfDocumentoRef.NotaCredito(empInt, sucInt, facInt)
+        End If
+        If String.Equals(tipo, "33", StringComparison.OrdinalIgnoreCase) Then
+            Return Helper.EncfDocumentoRef.NotaDebito(empInt, sucInt, facInt)
+        End If
+        If String.Equals(tipo, "43", StringComparison.OrdinalIgnoreCase) Then
+            Return Helper.EncfDocumentoRef.Desembolso(empInt, sucInt, facInt)
+        End If
+        If String.Equals(tipo, "34", StringComparison.OrdinalIgnoreCase) Then
+            Return Helper.EncfDocumentoRef.Devolucion(empInt, sucInt, facInt)
+        End If
+        If Not String.IsNullOrWhiteSpace(supCodigo) AndAlso
+           (String.Equals(tipo, "41", StringComparison.OrdinalIgnoreCase) OrElse
+            String.Equals(tipo, "47", StringComparison.OrdinalIgnoreCase)) Then
+            Dim supInt As Integer
+            Integer.TryParse(supCodigo, supInt)
+            Return Helper.EncfDocumentoRef.Compra(empInt, sucInt, supInt, facNumero)
+        End If
+        Return Helper.EncfDocumentoRef.Factura(empInt, sucInt, forma1, tfaInt, facInt)
+    End Function
+
+    Private Shared Function NumeroDocumento(doc As Helper.EncfDocumentoRef) As String
+        If doc Is Nothing Then Return "0"
+        If Not String.IsNullOrWhiteSpace(doc.DocNumeroStr) Then Return doc.DocNumeroStr.Trim()
+        If doc.DocNumero.HasValue Then Return doc.DocNumero.Value.ToString()
+        Return "0"
+    End Function
+
     Private Shared Function IntentarReusarEnvioExistenteDgii(
         emp As String,
         suc As String,
@@ -1394,17 +1461,27 @@ Public Class FacturaElectronicaService
         tipoECF As String,
         isNotaCredito As Boolean
     ) As String
-        Try
-            Dim empInt As Integer, sucInt As Integer, tfaInt As Integer, facInt As Integer
-            If Not Integer.TryParse(emp, empInt) OrElse Not Integer.TryParse(suc, sucInt) Then Return Nothing
-            Integer.TryParse(If(tfaCodigo, "0"), tfaInt)
-            If Not Integer.TryParse(facNumero, facInt) Then Return Nothing
-            Dim forma1 = If(facForma, "").Trim()
-            If forma1.Length > 1 Then forma1 = forma1.Substring(0, 1)
+        Dim empInt As Integer, sucInt As Integer, tfaInt As Integer, facInt As Integer
+        If Not Integer.TryParse(emp, empInt) OrElse Not Integer.TryParse(suc, sucInt) Then Return Nothing
+        Integer.TryParse(If(tfaCodigo, "0"), tfaInt)
+        If Not Integer.TryParse(facNumero, facInt) Then Return Nothing
+        Dim forma1 = If(facForma, "").Trim()
+        If forma1.Length > 1 Then forma1 = forma1.Substring(0, 1)
+        Return IntentarReusarEnvioExistenteDgii(
+            ConstruirDocReuso(empInt, sucInt, facInt, forma1, tfaInt, tipoECF, isNotaCredito, "", facNumero),
+            tipoECF, isNotaCredito)
+    End Function
 
-            Dim estadoPrev = Helper.ObtenerEstadoEncfFactura(cadenaConexion, empInt, forma1, tfaInt, facInt, sucInt)
+    Private Shared Function IntentarReusarEnvioExistenteDgii(
+        doc As Helper.EncfDocumentoRef,
+        tipoECF As String,
+        Optional isNotaCredito As Boolean = False
+    ) As String
+        If doc Is Nothing Then Return Nothing
+        Try
+            Dim estadoPrev = Helper.ObtenerEstadoEncf(cadenaConexion, doc)
             If Helper.DocumentoYaAceptado(estadoPrev) Then
-                Helper.RegistrarLogCliente("[DGII] Ya aceptada. No se reenvía. eNCF=" & If(estadoPrev.ENCF, ""))
+                Helper.RegistrarLogCliente("[DGII] Ya aceptado. No se reenvía. eNCF=" & If(estadoPrev.ENCF, "") & " tipo=" & doc.TipoDocumento)
                 Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
                     .Estado = "Aceptado",
                     .Aceptado = True,
@@ -1413,8 +1490,7 @@ Public Class FacturaElectronicaService
                 })
             End If
 
-            Dim docRef = Helper.EncfDocumentoRef.Factura(empInt, sucInt, forma1, tfaInt, facInt)
-            Dim bit = Helper.ObtenerUltimaBitacoraDgii(cadenaConexion, docRef)
+            Dim bit = Helper.ObtenerUltimaBitacoraDgii(cadenaConexion, doc)
             Dim trackExistente = If(bit IsNot Nothing, If(bit.TrackId, "").Trim(), "")
             If String.IsNullOrWhiteSpace(trackExistente) Then trackExistente = If(estadoPrev.TrackIdLuganis, "").Trim()
 
@@ -1433,17 +1509,11 @@ Public Class FacturaElectronicaService
                     Dim parsedExist = Helper.ParsearRespuestaDgii(respExist)
                     If parsedExist.Aceptado Then
                         Helper.RegistrarLogCliente("[DGII] Reconsulta: ACEPTADO. No se reenvía. trackId=" & trackExistente)
-                        Return ProcesarRespuestaAPISoloEstado(
-                            cadenaConexion, emp, suc, facNumero,
-                            If(facForma, ""), If(tfaCodigo, ""), If(tipoECF, ""),
-                            respExist, "", isNotaCredito)
+                        Return PersistirReconsultaDgii(doc, tipoECF, isNotaCredito, respExist)
                     End If
                     If parsedExist.EsPendiente Then
                         Helper.RegistrarLogCliente("[DGII] Reconsulta: PENDIENTE. No se reenvía ni se asigna otro eNCF. trackId=" & trackExistente)
-                        Return ProcesarRespuestaAPISoloEstado(
-                            cadenaConexion, emp, suc, facNumero,
-                            If(facForma, ""), If(tfaCodigo, ""), If(tipoECF, ""),
-                            respExist, "", isNotaCredito)
+                        Return PersistirReconsultaDgii(doc, tipoECF, isNotaCredito, respExist)
                     End If
                     If parsedExist.EsRechazado AndAlso
                        (String.Equals(If(parsedExist.CodigoMensaje, "").Trim(), "1209", StringComparison.OrdinalIgnoreCase) OrElse
@@ -1475,6 +1545,29 @@ Public Class FacturaElectronicaService
         Return Nothing
     End Function
 
+    Private Shared Function PersistirReconsultaDgii(
+        doc As Helper.EncfDocumentoRef,
+        tipoECF As String,
+        isNotaCredito As Boolean,
+        respuestaConsulta As String
+    ) As String
+        Dim num = NumeroDocumento(doc)
+        Dim emp = doc.EmpCodigo.ToString()
+        Dim suc = doc.SucCodigo.ToString()
+        If doc.TipoDocumento.Equals(Helper.TipoEncfPos, StringComparison.OrdinalIgnoreCase) OrElse
+           doc.TipoDocumento.Equals(Helper.TipoEncfResBar, StringComparison.OrdinalIgnoreCase) Then
+            Return ProcesarRespuestaAPISoloEstadoTicket(
+                cadenaConexion, emp, suc, num,
+                If(doc.UsuCodigo, 0).ToString(), If(doc.CajaCodigo, 0).ToString(),
+                respuestaConsulta,
+                doc.TipoDocumento.Equals(Helper.TipoEncfResBar, StringComparison.OrdinalIgnoreCase))
+        End If
+        Return ProcesarRespuestaAPISoloEstado(
+            cadenaConexion, emp, suc, num,
+            If(doc.FacForma, ""), If(doc.TfaCodigo, 0).ToString(), If(tipoECF, ""),
+            respuestaConsulta, If(doc.SupCodigo, 0).ToString(), isNotaCredito)
+    End Function
+
     Private Shared Function IntentarReusarEnvioExistenteLuganis(
         emp As String,
         suc As String,
@@ -1488,15 +1581,30 @@ Public Class FacturaElectronicaService
         loginRequest As LuganisLoginRequest,
         logDebug As Boolean
     ) As String
-        Try
-            Dim empInt As Integer, sucInt As Integer, tfaInt As Integer, facInt As Integer
-            If Not Integer.TryParse(emp, empInt) OrElse Not Integer.TryParse(suc, sucInt) Then Return Nothing
-            Integer.TryParse(If(tfaCodigo, "0"), tfaInt)
-            If Not Integer.TryParse(facNumero, facInt) Then Return Nothing
-            Dim forma1 = If(facForma, "").Trim()
-            If forma1.Length > 1 Then forma1 = forma1.Substring(0, 1)
+        Dim empInt As Integer, sucInt As Integer, tfaInt As Integer, facInt As Integer
+        If Not Integer.TryParse(emp, empInt) OrElse Not Integer.TryParse(suc, sucInt) Then Return Nothing
+        Integer.TryParse(If(tfaCodigo, "0"), tfaInt)
+        If Not Integer.TryParse(facNumero, facInt) Then Return Nothing
+        Dim forma1 = If(facForma, "").Trim()
+        If forma1.Length > 1 Then forma1 = forma1.Substring(0, 1)
+        Dim doc = ConstruirDocReuso(empInt, sucInt, facInt, forma1, tfaInt, tipoECF, isNotaCredito, supCodigo, facNumero)
+        Return IntentarReusarEnvioExistenteLuganis(doc, tipoECF, isNotaCredito, facForma, tfaCodigo, supCodigo, empRnc, loginRequest, logDebug)
+    End Function
 
-            Dim estadoPrev = Helper.ObtenerEstadoEncfFactura(cadenaConexion, empInt, forma1, tfaInt, facInt, sucInt)
+    Private Shared Function IntentarReusarEnvioExistenteLuganis(
+        doc As Helper.EncfDocumentoRef,
+        tipoECF As String,
+        isNotaCredito As Boolean,
+        facForma As String,
+        tfaCodigo As String,
+        supCodigo As String,
+        empRnc As String,
+        loginRequest As LuganisLoginRequest,
+        logDebug As Boolean
+    ) As String
+        If doc Is Nothing Then Return Nothing
+        Try
+            Dim estadoPrev = Helper.ObtenerEstadoEncf(cadenaConexion, doc)
             If Helper.DocumentoYaAceptado(estadoPrev) Then
                 Helper.RegistrarLogCliente("[LUGANIS] Ya aceptada. No se reenvía. eNCF=" & If(estadoPrev.ENCF, ""))
                 Return ConstruirJsonLuganis(
@@ -1527,9 +1635,9 @@ Public Class FacturaElectronicaService
                     ActualizarDatosLuganisEnBD(
                         cadenaConexion:=cadenaConexion,
                         tipoECF:=tipoECF,
-                        emp:=emp,
-                        suc:=suc,
-                        facNumero:=facNumero,
+                        emp:=doc.EmpCodigo.ToString(),
+                        suc:=doc.SucCodigo.ToString(),
+                        facNumero:=NumeroDocumento(doc),
                         encf:=encfPrev,
                         trackId:=If(consulta.TrackId, track),
                         aceptado:=True,
@@ -1564,9 +1672,9 @@ Public Class FacturaElectronicaService
                     ActualizarDatosLuganisEnBD(
                         cadenaConexion:=cadenaConexion,
                         tipoECF:=tipoECF,
-                        emp:=emp,
-                        suc:=suc,
-                        facNumero:=facNumero,
+                        emp:=doc.EmpCodigo.ToString(),
+                        suc:=doc.SucCodigo.ToString(),
+                        facNumero:=NumeroDocumento(doc),
                         encf:=encfPrev,
                         trackId:=If(consulta.TrackId, track),
                         aceptado:=False,
@@ -1681,6 +1789,15 @@ Public Class FacturaElectronicaService
             Dim xmlFactura As XmlDocument
             Seguridad.ObtenerToken()
 
+            Dim empPos As Integer, sucPos As Integer, tickPos As Integer, usuPos As Integer, cajaPos As Integer
+            If Integer.TryParse(emp, empPos) AndAlso Integer.TryParse(suc, sucPos) AndAlso Integer.TryParse(ticket, tickPos) Then
+                Integer.TryParse(If(usu_codigo, "0"), usuPos)
+                Integer.TryParse(If(caja, "0"), cajaPos)
+                Dim jsonYaPos = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.PosTicket(empPos, sucPos, usuPos, cajaPos, tickPos), tipoECF)
+                If Not String.IsNullOrWhiteSpace(jsonYaPos) Then Return jsonYaPos
+            End If
+
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDGIIPOS(cadenaConexion,
                                                      Convert.ToInt32(emp),
                                                      Convert.ToInt32(suc),
@@ -1739,6 +1856,15 @@ Public Class FacturaElectronicaService
             Dim xmlFactura As XmlDocument
             Seguridad.ObtenerToken()
 
+            Dim empRb As Integer, sucRb As Integer, tickRb As Integer, usuRb As Integer, cajaRb As Integer
+            If Integer.TryParse(emp, empRb) AndAlso Integer.TryParse(suc, sucRb) AndAlso Integer.TryParse(ticket, tickRb) Then
+                Integer.TryParse(If(usu_codigo, "0"), usuRb)
+                Integer.TryParse(If(caja, "0"), cajaRb)
+                Dim jsonYaRb = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.ResBar(empRb, sucRb, usuRb, cajaRb, tickRb), tipoECF)
+                If Not String.IsNullOrWhiteSpace(jsonYaRb) Then Return jsonYaRb
+            End If
+
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDGIIPOSResBar(cadenaConexion,
                                                      Convert.ToInt32(emp),
                                                      Convert.ToInt32(suc),
@@ -1787,6 +1913,14 @@ Public Class FacturaElectronicaService
             CargarConfiguracion()
             Seguridad.ObtenerToken()
 
+            Dim empPosR As Integer, sucPosR As Integer, tickPosR As Integer, usuPosR As Integer, cajaPosR As Integer
+            If Integer.TryParse(emp, empPosR) AndAlso Integer.TryParse(suc, sucPosR) AndAlso Integer.TryParse(ticket, tickPosR) Then
+                Integer.TryParse(If(usu_codigo, "0"), usuPosR)
+                Integer.TryParse(If(caja, "0"), cajaPosR)
+                Dim jsonYaPosR = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.PosTicket(empPosR, sucPosR, usuPosR, cajaPosR, tickPosR), tipoECF)
+                If Not String.IsNullOrWhiteSpace(jsonYaPosR) Then Return MsgYaEnviadoNoReenviar
+            End If
 
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDGIIPOS(cadenaConexion,
                                                      Convert.ToInt32(emp),
@@ -1818,6 +1952,15 @@ Public Class FacturaElectronicaService
             CargarConfiguracion()
             Seguridad.ObtenerToken()
 
+            Dim empRbR As Integer, sucRbR As Integer, tickRbR As Integer, usuRbR As Integer, cajaRbR As Integer
+            If Integer.TryParse(emp, empRbR) AndAlso Integer.TryParse(suc, sucRbR) AndAlso Integer.TryParse(ticket, tickRbR) Then
+                Integer.TryParse(If(usu_codigo, "0"), usuRbR)
+                Integer.TryParse(If(caja, "0"), cajaRbR)
+                Dim jsonYaRbR = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.ResBar(empRbR, sucRbR, usuRbR, cajaRbR, tickRbR), tipoECF)
+                If Not String.IsNullOrWhiteSpace(jsonYaRbR) Then Return MsgYaEnviadoNoReenviar
+            End If
+
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDGIIPOSResBar(cadenaConexion,
                                                      Convert.ToInt32(emp),
                                                      Convert.ToInt32(suc),
@@ -1847,6 +1990,9 @@ Public Class FacturaElectronicaService
             CargarConfiguracion()
             Seguridad.ObtenerToken()
 
+            Dim jsonYaRes = IntentarReusarEnvioExistenteDgii(
+                emp, suc, facNumero, facForma, tfaCodigo, tipoECF, False)
+            If Not String.IsNullOrWhiteSpace(jsonYaRes) Then Return MsgYaEnviadoNoReenviar
 
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDGII(cadenaConexion,
                                                      Convert.ToInt32(emp),
@@ -1875,6 +2021,14 @@ Public Class FacturaElectronicaService
 
             Dim esPagoExterior As Boolean = EsCompraPagoExterior(cadenaConexion, emp, sup, facNumero, tipoECF)
             Dim tipoeCFAsignacion As Integer = If(esPagoExterior, 47, 41)
+
+            Dim empC As Integer, sucC As Integer, supC As Integer
+            If Integer.TryParse(emp, empC) AndAlso Integer.TryParse(suc, sucC) AndAlso Integer.TryParse(sup, supC) Then
+                Dim jsonYaCompra = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.Compra(empC, sucC, supC, facNumero),
+                    If(esPagoExterior, "47", "41"))
+                If Not String.IsNullOrWhiteSpace(jsonYaCompra) Then Return MsgYaEnviadoNoReenviar
+            End If
 
             Dim nuevoENCF As String = LlamarAsignarSecuenciaComprasDGII(cadenaConexion,
                                                      Convert.ToInt32(emp),
@@ -1968,6 +2122,26 @@ Public Class FacturaElectronicaService
             End If
 
             CargarConfiguracion()
+
+            Dim loginRequestPreCompra As New LuganisLoginRequest With {
+                .BaseUrl = baseUrl,
+                .CompanyCode = companyCode,
+                .Username = username,
+                .Password = password,
+                .AppVersion = appVersion,
+                .Os = os,
+                .DeviceId = deviceId,
+                .Latitude = latitude,
+                .Longitude = longitude,
+                .ProviderIpAddress = providerIpAddress
+            }
+            Dim empCL As Integer, sucCL As Integer, supCL As Integer
+            If Integer.TryParse(emp, empCL) AndAlso Integer.TryParse(suc, sucCL) AndAlso Integer.TryParse(sup, supCL) Then
+                Dim jsonLugCompra = IntentarReusarEnvioExistenteLuganis(
+                    Helper.EncfDocumentoRef.Compra(empCL, sucCL, supCL, facNumero),
+                    "41", False, "", "", sup, empRnc, loginRequestPreCompra, logDebug)
+                If Not String.IsNullOrWhiteSpace(jsonLugCompra) Then Return jsonLugCompra
+            End If
 
             ' 1) Obtener eNCF de compras (SP de proveedores)
             Dim nuevoENCF As String = LlamarAsignarSecuenciaComprasDGII(
@@ -2063,6 +2237,14 @@ Public Class FacturaElectronicaService
             CargarConfiguracion()
             Seguridad.ObtenerToken()
 
+            Dim empDes As Integer, sucDes As Integer, numDes As Integer
+            If Integer.TryParse(emp, empDes) AndAlso Integer.TryParse(suc, sucDes) AndAlso Integer.TryParse(facNumero, numDes) Then
+                Dim jsonYaDes = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.Desembolso(empDes, sucDes, numDes),
+                    If(String.IsNullOrWhiteSpace(tipoECF), "43", tipoECF))
+                If Not String.IsNullOrWhiteSpace(jsonYaDes) Then Return MsgYaEnviadoNoReenviar
+            End If
+
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDesembolsosDGII(cadenaConexion,
                                                      Convert.ToInt32(emp),
                                                      Convert.ToInt32(suc),
@@ -2092,6 +2274,14 @@ Public Class FacturaElectronicaService
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+
+            Dim empDev As Integer, sucDev As Integer, numDev As Integer
+            If Integer.TryParse(emp, empDev) AndAlso Integer.TryParse(suc, sucDev) AndAlso Integer.TryParse(facNumero, numDev) Then
+                Dim jsonYaDev = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.Devolucion(empDev, sucDev, numDev),
+                    If(String.IsNullOrWhiteSpace(tipoECF), "34", tipoECF))
+                If Not String.IsNullOrWhiteSpace(jsonYaDev) Then Return MsgYaEnviadoNoReenviar
+            End If
 
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDevolucionDGII(cadenaConexion,
                                                      Convert.ToInt32(emp),
@@ -2124,6 +2314,15 @@ Public Class FacturaElectronicaService
             CargarConfiguracion()
             Seguridad.ObtenerToken()
 
+            Dim empNc As Integer, sucNc As Integer, numNc As Integer
+            If Integer.TryParse(emp, empNc) AndAlso Integer.TryParse(suc, sucNc) AndAlso Integer.TryParse(facNumero, numNc) Then
+                Dim jsonYaNc = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.NotaCredito(empNc, sucNc, numNc),
+                    If(String.IsNullOrWhiteSpace(tipoECF), "34", tipoECF),
+                    True)
+                If Not String.IsNullOrWhiteSpace(jsonYaNc) Then Return MsgYaEnviadoNoReenviar
+            End If
+
             Dim nuevoENCF As String = LlamarAsignarSecuenciaNotaCreditoDGII(cadenaConexion,
                                                      Convert.ToInt32(emp),
                                                      Convert.ToInt32(suc),
@@ -2155,6 +2354,13 @@ Public Class FacturaElectronicaService
             Seguridad.ObtenerToken()
             isPOS = True
             isResBar = False
+            Dim empDevP As Integer, sucDevP As Integer, numDevP As Integer
+            If Integer.TryParse(emp, empDevP) AndAlso Integer.TryParse(suc, sucDevP) AndAlso Integer.TryParse(facNumero, numDevP) Then
+                Dim jsonYaDevP = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.Devolucion(empDevP, sucDevP, numDevP),
+                    If(String.IsNullOrWhiteSpace(tipoECF), "34", tipoECF))
+                If Not String.IsNullOrWhiteSpace(jsonYaDevP) Then Return MsgYaEnviadoNoReenviar
+            End If
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDevolucionDGII(cadenaConexion,
                                                      Convert.ToInt32(emp),
                                                      Convert.ToInt32(suc),
@@ -2187,6 +2393,13 @@ Public Class FacturaElectronicaService
             Seguridad.ObtenerToken()
             isResBar = True
             isPOS = False
+            Dim empDevR As Integer, sucDevR As Integer, numDevR As Integer
+            If Integer.TryParse(emp, empDevR) AndAlso Integer.TryParse(suc, sucDevR) AndAlso Integer.TryParse(facNumero, numDevR) Then
+                Dim jsonYaDevR = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.Devolucion(empDevR, sucDevR, numDevR),
+                    If(String.IsNullOrWhiteSpace(tipoECF), "34", tipoECF))
+                If Not String.IsNullOrWhiteSpace(jsonYaDevR) Then Return MsgYaEnviadoNoReenviar
+            End If
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDevolucionDGII(cadenaConexion,
                                                      Convert.ToInt32(emp),
                                                      Convert.ToInt32(suc),
@@ -2638,7 +2851,26 @@ WHERE usu_codigo = @usu
                                              Optional tipoECF As String = "") As String
         Try
             CargarConfiguracion()
-            ProcesoEnvioFacturaE33(RncCliente, eNCF, tipoECF, emp, suc, "", facNumero, empRnc)
+            Seguridad.ObtenerToken()
+            Dim encfUsar = If(eNCF, "").Trim()
+            Dim empNd As Integer, sucNd As Integer, numNd As Integer
+            If Integer.TryParse(emp, empNd) AndAlso Integer.TryParse(suc, sucNd) AndAlso Integer.TryParse(facNumero, numNd) Then
+                Dim docNd = Helper.EncfDocumentoRef.NotaDebito(empNd, sucNd, numNd)
+                Dim jsonYaNd = IntentarReusarEnvioExistenteDgii(
+                    docNd, If(String.IsNullOrWhiteSpace(tipoECF), "33", tipoECF))
+                If Not String.IsNullOrWhiteSpace(jsonYaNd) Then Return MsgYaEnviadoNoReenviar
+                If String.IsNullOrWhiteSpace(encfUsar) Then
+                    encfUsar = EncFYaAsignado(Helper.ObtenerEstadoEncf(cadenaConexion, docNd))
+                End If
+                If String.IsNullOrWhiteSpace(encfUsar) Then
+                    encfUsar = LlamarAsignarSecuenciaNotaDebitoDGII(cadenaConexion, empNd, sucNd, facNumero)
+                End If
+            End If
+            If String.IsNullOrWhiteSpace(encfUsar) Then
+                Return "Error: no hay eNCF para la nota de débito " & facNumero
+            End If
+            glbncfEnvia = encfUsar
+            ProcesoEnvioFacturaE33(RncCliente, encfUsar, If(String.IsNullOrWhiteSpace(tipoECF), "33", tipoECF), emp, suc, "", facNumero, empRnc)
             Return $"OK: Factura {facNumero} tipo {tipoECF} lista para envÃ­o desde empresa {emp}, sucursal {suc}."
         Catch ex As Exception
             Return "Error: " & ex.Message
@@ -2657,6 +2889,13 @@ WHERE usu_codigo = @usu
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+
+            Dim empPe As Integer, sucPe As Integer, supPe As Integer
+            If Integer.TryParse(emp, empPe) AndAlso Integer.TryParse(suc, sucPe) AndAlso Integer.TryParse(sup, supPe) Then
+                Dim jsonYaPe = IntentarReusarEnvioExistenteDgii(
+                    Helper.EncfDocumentoRef.Compra(empPe, sucPe, supPe, facNumero), "47")
+                If Not String.IsNullOrWhiteSpace(jsonYaPe) Then Return MsgYaEnviadoNoReenviar
+            End If
 
             Dim nuevoENCF As String = LlamarAsignarSecuenciaComprasDGII(cadenaConexion,
                                                      Convert.ToInt32(emp),
@@ -3717,6 +3956,11 @@ WHERE usu_codigo = @usu
 
         Dim estadoEncfPrevio As Helper.DocumentoEncfEstado =
             Helper.ObtenerEstadoEncfFactura(cadenaConexion, emp_codigo, forma1, tipo, numero, suc_codigo)
+        Dim encfPrevFac = EncFYaAsignado(estadoEncfPrevio)
+        If encfPrevFac <> "" Then
+            Helper.RegistrarLogCliente("[DGII] Factura ya tiene eNCF=" & encfPrevFac & "; se reutiliza.")
+            Return encfPrevFac
+        End If
 
         Try
             Using cn As New SqlClient.SqlConnection(cadenaConexion)
@@ -3804,6 +4048,11 @@ WHERE usu_codigo = @usu
         ValidarMontoPosMayorQueCero(cadenaConexion, emp_codigo, suc_codigo, usuId, cajaId, numero)
         Dim docPos = Helper.EncfDocumentoRef.PosTicket(emp_codigo, suc_codigo, usuId, cajaId, numero)
         Dim estadoEncfPrevioPos = Helper.ObtenerEstadoEncf(cadenaConexion, docPos)
+        Dim encfPrevPos = EncFYaAsignado(estadoEncfPrevioPos)
+        If encfPrevPos <> "" Then
+            Helper.RegistrarLogCliente("[DGII] POS ya tiene eNCF=" & encfPrevPos & "; se reutiliza.")
+            Return encfPrevPos
+        End If
 
         Try
             Using cn As New SqlClient.SqlConnection(cadenaConexion)
@@ -3884,6 +4133,11 @@ WHERE usu_codigo = @usu
         ValidarMontoResBarMayorQueCero(cadenaConexion, emp_codigo, suc_codigo, usuIdRb, cajaIdRb, numero)
         Dim docRb = Helper.EncfDocumentoRef.ResBar(emp_codigo, suc_codigo, usuIdRb, cajaIdRb, numero)
         Dim estadoEncfPrevioRb = Helper.ObtenerEstadoEncf(cadenaConexion, docRb)
+        Dim encfPrevRb = EncFYaAsignado(estadoEncfPrevioRb)
+        If encfPrevRb <> "" Then
+            Helper.RegistrarLogCliente("[DGII] ResBar ya tiene eNCF=" & encfPrevRb & "; se reutiliza.")
+            Return encfPrevRb
+        End If
 
         Try
             Using cn As New SqlClient.SqlConnection(cadenaConexion)
@@ -4061,6 +4315,11 @@ WHERE EMP_CODIGO=@emp
 ) As String
         Dim docCompra = Helper.EncfDocumentoRef.Compra(emp_codigo, suc_codigo, sup_codigo, numero)
         Dim estadoCompra = Helper.ObtenerEstadoEncf(cadenaConexion, docCompra)
+        Dim encfPrevCompra = EncFYaAsignado(estadoCompra)
+        If encfPrevCompra <> "" Then
+            Helper.RegistrarLogCliente("[DGII] Compra ya tiene eNCF=" & encfPrevCompra & "; se reutiliza.")
+            Return encfPrevCompra
+        End If
         Try
             Dim p As New List(Of SqlParameter) From {
                 New SqlParameter("@empresa", emp_codigo),
@@ -4150,6 +4409,11 @@ WHERE EMP_CODIGO=@emp
         Integer.TryParse(If(numero, "").Trim(), numDes)
         Dim docDes = Helper.EncfDocumentoRef.Desembolso(emp_codigo, suc_codigo, numDes)
         Dim estadoDes = Helper.ObtenerEstadoEncf(cadenaConexion, docDes)
+        Dim encfPrevDes = EncFYaAsignado(estadoDes)
+        If encfPrevDes <> "" Then
+            Helper.RegistrarLogCliente("[DGII] Desembolso ya tiene eNCF=" & encfPrevDes & "; se reutiliza.")
+            Return encfPrevDes
+        End If
         Try
             Dim p As SqlParameter() = {
             New SqlParameter("@empresa", emp_codigo),
@@ -4322,6 +4586,11 @@ SELECT @nuevo;"
         Integer.TryParse(If(numero, "").Trim(), numNc)
         Dim docNc = Helper.EncfDocumentoRef.NotaCredito(emp_codigo, suc_codigo, numNc)
         Dim estadoNc = Helper.ObtenerEstadoEncf(cadenaConexion, docNc)
+        Dim encfPrevNc = EncFYaAsignado(estadoNc)
+        If encfPrevNc <> "" Then
+            Helper.RegistrarLogCliente("[DGII] Nota de crédito ya tiene eNCF=" & encfPrevNc & "; se reutiliza.")
+            Return encfPrevNc
+        End If
         Try
             Dim p As SqlParameter() = {
             New SqlParameter("@empresa", emp_codigo),
@@ -4347,6 +4616,50 @@ SELECT @nuevo;"
 
         Catch ex As Exception
             Helper.RegistrarLogCliente("Error en AsignarSecuenciaNotaCreditoDGII: " & ex.Message)
+            Return ""
+        End Try
+    End Function
+
+    Private Shared Function LlamarAsignarSecuenciaNotaDebitoDGII(
+    cadenaConexion As String,
+    emp_codigo As Integer,
+    suc_codigo As Integer,
+    numero As String
+) As String
+        Dim numNd As Integer
+        Integer.TryParse(If(numero, "").Trim(), numNd)
+        Dim docNd = Helper.EncfDocumentoRef.NotaDebito(emp_codigo, suc_codigo, numNd)
+        Dim estadoNd = Helper.ObtenerEstadoEncf(cadenaConexion, docNd)
+        Dim encfPrevNd = EncFYaAsignado(estadoNd)
+        If encfPrevNd <> "" Then
+            Helper.RegistrarLogCliente("[DGII] Nota de débito ya tiene eNCF=" & encfPrevNd & "; se reutiliza.")
+            Return encfPrevNd
+        End If
+        Try
+            Dim p As SqlParameter() = {
+                New SqlParameter("@empresa", emp_codigo),
+                New SqlParameter("@sucursal", suc_codigo),
+                New SqlParameter("@numero", numero),
+                New SqlParameter("@eNCF", SqlDbType.VarChar, 50) With {
+                    .Direction = ParameterDirection.Output,
+                    .Value = DBNull.Value
+                }
+            }
+
+            Helper.EjecutarProcedimientoAlmacenado(cadenaConexion, "AsignarSecuenciaNotaDebitoDGII", p)
+
+            Dim encfGeneradoObj As Object = p(3).Value
+            Dim encfGenerado As String = If(encfGeneradoObj Is Nothing OrElse encfGeneradoObj Is DBNull.Value, "", encfGeneradoObj.ToString().Trim())
+
+            If String.IsNullOrWhiteSpace(encfGenerado) Then
+                Throw New Exception("El SP no devolvió un eNCF válido o no encontró la nota de débito.")
+            End If
+
+            RegistrarBitacoraEncfTrasAsignacion(cadenaConexion, docNd, encfGenerado, estadoNd, "DGII_ASIGNACION_NOTADEBITO")
+            Return encfGenerado
+
+        Catch ex As Exception
+            Helper.RegistrarLogCliente("Error en AsignarSecuenciaNotaDebitoDGII: " & ex.Message)
             Return ""
         End Try
     End Function
