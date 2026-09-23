@@ -1,7 +1,16 @@
 /*
-  Evita e-CF duplicados: si la factura YA tiene eNCF, se reutiliza.
+  Evita e-CF duplicados: si el documento YA tiene eNCF, se reutiliza.
   El primer envío pudo ser aceptado en DGII y marcado error/pendiente en DASHA;
   emitir otro número deja dos aceptados.
+
+  Este archivo es el SP de facturas. El resto de tipos está en:
+    SP_AsignarSecuenciaFacturasDGIIPOS.sql
+    SP_AsignarSecuenciaFacturasDGIIPOSRESBAR.sql
+    SP_AsignarSecuenciaFacturasProvDGII.sql
+    SP_AsignarSecuenciaDevolucionDGII.sql
+    SP_AsignarSecuenciaNotaCreditoDGII.sql
+    SP_AsignarSecuenciaFacturasDesembolsosDGII.sql
+    SP_AsignarSecuenciaNotaDebitoDGII.sql
 
   Ejecutar en la base del cliente (vegaclean, etc.).
   Compatible SQL Server 2008 R2+: stub + ALTER.
