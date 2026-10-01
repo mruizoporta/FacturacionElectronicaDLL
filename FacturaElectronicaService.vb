@@ -10260,7 +10260,28 @@ SELECT @nuevo;"
             Helper.AddElement(xmlDoc, idDocNode, "TipoeCF", facturaReader("TipoeCF").ToString())
             glbTipoeCF = facturaReader("TipoeCF").ToString()
 
-            Helper.AddElement(xmlDoc, idDocNode, "eNCF", eNCF)
+            Dim encfXml As String = If(eNCF, "").Trim()
+            If Not encfXml.StartsWith("E34") Then
+                Try
+                    Dim nota = facturaReader("eNCFNota").ToString().Trim()
+                    If nota.StartsWith("E34") Then encfXml = nota
+                Catch
+                End Try
+            End If
+            If Not encfXml.StartsWith("E34") Then
+                Try
+                    Dim vista = facturaReader("eNCF").ToString().Trim()
+                    If vista.StartsWith("E34") Then encfXml = vista
+                Catch
+                End Try
+            End If
+            If encfXml.StartsWith("E34") Then
+                glbncfEnvia = encfXml
+                Helper.AddElement(xmlDoc, idDocNode, "eNCF", encfXml)
+            Else
+                Helper.RegistrarLogCliente("GenerarXMLE34: se ignora eNCF que no es E34: " & encfXml)
+                Helper.AddElement(xmlDoc, idDocNode, "eNCF", If(eNCF, ""))
+            End If
 
             ' =======================
             ' INDICADORNOTACREDITO
