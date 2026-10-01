@@ -46,7 +46,9 @@ BEGIN
           AND d.DEV_NUMERO = @numero
           AND ISNULL(d.dev_status, '') <> 'ANU';
 
-        IF @eNCFActual IS NOT NULL
+        -- Reutilizar solo un eNCF de nota de credito (E34). Si copiaron el E31
+        -- de la factura a Devolucion.eNCF, hay que emitir uno nuevo tipo 34.
+        IF @eNCFActual IS NOT NULL AND LEFT(@eNCFActual, 3) = 'E34'
         BEGIN
             SET @eNCF = @eNCFActual;
             COMMIT TRAN;

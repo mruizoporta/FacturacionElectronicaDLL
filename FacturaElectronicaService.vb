@@ -800,7 +800,7 @@ Public Class FacturaElectronicaService
                 If Not String.IsNullOrWhiteSpace(jsonLugDev) Then Return jsonLugDev
             End If
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDevolucionDGII(cadenaConexion, Convert.ToInt32(emp), Convert.ToInt32(suc), devNumero)
-            If String.IsNullOrWhiteSpace(nuevoENCF) AndAlso Not String.IsNullOrWhiteSpace(eNCF) Then
+            If String.IsNullOrWhiteSpace(nuevoENCF) AndAlso Not String.IsNullOrWhiteSpace(eNCF) AndAlso eNCF.Trim().StartsWith("E34") Then
                 nuevoENCF = eNCF.Trim()
                 Helper.RegistrarLogCliente("[LUGANIS] Devolución: SP no asignó eNCF; se usa eNCF recibido=" & nuevoENCF)
             End If
@@ -4505,7 +4505,8 @@ WHERE EMP_CODIGO=@emp
 "SELECT TOP (1) NULLIF(LTRIM(RTRIM(eNCF)), '') AS eNCF
  FROM dbo.Devolucion WITH (NOLOCK)
  WHERE emp_codigo = @emp AND suc_codigo = @suc AND DEV_NUMERO = @num
-   AND ISNULL(dev_status,'') <> 'ANU';"
+   AND ISNULL(dev_status,'') <> 'ANU'
+   AND LEFT(LTRIM(RTRIM(ISNULL(eNCF,''))), 3) = 'E34';"
         Try
             Using conn As New SqlConnection(cadenaConexion)
                 Using cmd As New SqlCommand(sql, conn)
