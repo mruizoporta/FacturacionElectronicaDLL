@@ -2100,7 +2100,7 @@ Public Class FacturaElectronicaService
 
             Helper.RegistrarLogCliente("nuevoENCF " + nuevoENCF)
 
-            Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, tipoECF, emp, suc, "", facNumero, empRnc, "", "", False)
+            Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, "34", emp, suc, "", facNumero, empRnc, "", "", False)
             Return r
             'Return nuevoENCF
             'Return $"OK: Factura {facNumero} tipo {tipoECF} lista para envÃ­o desde empresa {emp}, sucursal {suc}."
@@ -2130,7 +2130,7 @@ Public Class FacturaElectronicaService
                                                      facNumero)
 
 
-            Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, tipoECF, emp, suc, "", facNumero, empRnc, "", "", True)
+            Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, "34", emp, suc, "", facNumero, empRnc, "", "", True)
             Return r
             'Return nuevoENCF
             'Return $"OK: Factura {facNumero} tipo {tipoECF} lista para envÃ­o desde empresa {emp}, sucursal {suc}."
@@ -2162,7 +2162,7 @@ Public Class FacturaElectronicaService
 
             Helper.RegistrarLogCliente("nuevoENCF " + nuevoENCF)
 
-            Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, tipoECF, emp, suc, "", facNumero, empRnc, "", "", False)
+            Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, "34", emp, suc, "", facNumero, empRnc, "", "", False)
             'Return nuevoENCF
             Return $"OK: Factura {facNumero} tipo {tipoECF} lista para envÃ­o desde empresa {emp}, sucursal {suc}."
         Catch ex As Exception
@@ -2194,7 +2194,7 @@ Public Class FacturaElectronicaService
 
             Helper.RegistrarLogCliente("nuevoENCF " + nuevoENCF)
 
-            Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, tipoECF, emp, suc, "", facNumero, empRnc, "", "", False)
+            Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, "34", emp, suc, "", facNumero, empRnc, "", "", False)
             Return $"OK: Factura {facNumero} tipo {tipoECF} lista para envÃ­o desde empresa {emp}, sucursal {suc}."
         Catch ex As Exception
             Return $"Error: {facNumero} tipo {tipoECF}  empresa {emp}, sucursal {suc} {ex.Message}"
@@ -3038,6 +3038,20 @@ WHERE usu_codigo = @usu
             Dim estado As String = parsedDgii.Estado
             Dim trackId As String = If(parsedDgii.TrackId, "")
             Dim encf As String = If(parsedDgii.Encf, "")
+            If (If(TipoeCF, "").Trim() = "34" OrElse If(glbTipoeCF, "").Trim() = "34") AndAlso
+               Not (If(encf, "").Trim().StartsWith("E34")) Then
+                Dim g = If(glbncfEnvia, "").Trim()
+                If g.StartsWith("E34") Then encf = g
+            End If
+            Dim codigoPersist As String = If(codigoseguridad, "").Trim()
+            If codigoPersist.Length < 6 Then
+                codigoPersist = ObtenerCodigoSeguridadDesdeXml(signedXml)
+            End If
+            If codigoPersist.Length < 6 Then
+                codigoPersist = ObtenerCodigoSeguridadDesdeBitacora(
+                    cadenaConexion, emp_codigo, facNumero,
+                    Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito))
+            End If
             Dim fechaRecepcion As String = DateTime.Now.ToString("M/d/yyyy h:mm:ss tt")
             Dim codigoMensaje As String = If(parsedDgii.CodigoMensaje, "")
             Dim mensajeError As String = If(parsedDgii.Mensaje, "")
@@ -3135,7 +3149,7 @@ WHERE usu_codigo = @usu
                            New SqlParameter("@suc_codigo", suc_codigo),
                            New SqlParameter("@fac_numero", facNumero),
                            New SqlParameter("@eNCF", encf),
-                           New SqlParameter("@codigoseguridad", codigoseguridad),
+                           ParamCodigoSeguridad(codigoPersist),
                            New SqlParameter("@fechafirma", fechaFirma),
                            New SqlParameter("@aceptado", aceptado),
                            New SqlParameter("@secuenciaUtilizada", secuenciautilizada)
@@ -3147,7 +3161,7 @@ WHERE usu_codigo = @usu
                            New SqlParameter("@suc_codigo", suc_codigo),
                            New SqlParameter("@fac_numero", facNumero),
                            New SqlParameter("@eNCF", encf),
-                           New SqlParameter("@codigoseguridad", codigoseguridad),
+                           ParamCodigoSeguridad(codigoPersist),
                            New SqlParameter("@fechafirma", fechaFirma),
                            New SqlParameter("@aceptado", aceptado),
                            New SqlParameter("@secuenciaUtilizada", secuenciautilizada)
@@ -3281,8 +3295,13 @@ WHERE usu_codigo = @usu
             Dim aceptado As Integer = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
             Helper.AjustarPersistenciaPendiente(aceptado, secuenciautilizada, estado)
 
-            Dim codigoseguridadRecons As String = ""
+            Dim tipoBit = Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito)
+            Dim codigoseguridadRecons As String = ObtenerCodigoSeguridadDesdeBitacora(cadenaConexion, emp_codigo, facNumero, tipoBit)
             Dim fechaFirmaRecons As DateTime = DateTime.Now
+            If (If(TipoeCF, "").Trim() = "34") AndAlso Not (If(encf, "").Trim().StartsWith("E34")) Then
+                Dim g = If(glbncfEnvia, "").Trim()
+                If g.StartsWith("E34") Then encf = g
+            End If
 
             Select Case TipoeCF
                 Case "31", "32", "44", "45", "46"
@@ -3321,7 +3340,7 @@ WHERE usu_codigo = @usu
                             New SqlParameter("@suc_codigo", suc_codigo),
                             New SqlParameter("@fac_numero", facNumero),
                             New SqlParameter("@eNCF", encf),
-                            New SqlParameter("@codigoseguridad", codigoseguridadRecons),
+                            ParamCodigoSeguridad(codigoseguridadRecons),
                             New SqlParameter("@fechafirma", fechaFirmaRecons),
                             New SqlParameter("@aceptado", aceptado),
                             New SqlParameter("@secuenciaUtilizada", secuenciautilizada)
@@ -3333,7 +3352,7 @@ WHERE usu_codigo = @usu
                             New SqlParameter("@suc_codigo", suc_codigo),
                             New SqlParameter("@fac_numero", facNumero),
                             New SqlParameter("@eNCF", encf),
-                            New SqlParameter("@codigoseguridad", codigoseguridadRecons),
+                            ParamCodigoSeguridad(codigoseguridadRecons),
                             New SqlParameter("@fechafirma", fechaFirmaRecons),
                             New SqlParameter("@aceptado", aceptado),
                             New SqlParameter("@secuenciaUtilizada", secuenciautilizada)
@@ -8266,20 +8285,60 @@ SELECT @nuevo;"
     End Function
 
     Private Shared Function ObtenerCodigoSeguridadDesdeXml(xmlDoc As XmlDocument) As String
+        If xmlDoc Is Nothing Then Return ""
         Dim nsmgr As New XmlNamespaceManager(xmlDoc.NameTable)
         nsmgr.AddNamespace("ds", "http://www.w3.org/2000/09/xmldsig#")
 
         Dim signatureValueNode As XmlNode = xmlDoc.SelectSingleNode("//ds:SignatureValue", nsmgr)
         If signatureValueNode Is Nothing Then
-            Return "Firma no encontrada"
+            signatureValueNode = xmlDoc.SelectSingleNode("//*[local-name()='SignatureValue']")
         End If
+        If signatureValueNode Is Nothing Then Return ""
 
-        Dim hash As String = signatureValueNode.InnerText.Trim()
-        If hash.Length >= 6 Then
-            Return hash.Substring(0, 6)
-        Else
-            Return "Hash incompleto"
+        Dim hash As String = If(signatureValueNode.InnerText, "")
+        hash = hash.Replace(" ", "").Replace(vbCr, "").Replace(vbLf, "").Replace(vbTab, "").Trim()
+        If hash.Length >= 6 Then Return hash.Substring(0, 6)
+        Return ""
+    End Function
+
+    ''' <summary>Si el envio guardo XML en bitacora y luego la reconsulta borro el codigo, lo recupera.</summary>
+    Private Shared Function ObtenerCodigoSeguridadDesdeBitacora(cadenaConexion As String, empCodigo As String, facNumero As String, tipoBitacora As String) As String
+        Try
+            Dim sql As String =
+                "SELECT TOP 1 XML_Firmado FROM dbo.BitacoraFacturacionElectronicaDGII " &
+                "WHERE emp_codigo = @emp AND fac_numero = @fac " &
+                "AND (@tipo IS NULL OR tipo = @tipo OR tipo IS NULL) " &
+                "AND XML_Firmado IS NOT NULL AND LEN(XML_Firmado) > 50 " &
+                "ORDER BY Fecha_Envio DESC"
+            Using conn As New SqlConnection(cadenaConexion)
+                Using cmd As New SqlCommand(sql, conn)
+                    cmd.Parameters.AddWithValue("@emp", empCodigo)
+                    cmd.Parameters.AddWithValue("@fac", facNumero)
+                    If String.IsNullOrWhiteSpace(tipoBitacora) Then
+                        cmd.Parameters.AddWithValue("@tipo", DBNull.Value)
+                    Else
+                        cmd.Parameters.AddWithValue("@tipo", tipoBitacora)
+                    End If
+                    conn.Open()
+                    Dim o = cmd.ExecuteScalar()
+                    If o Is Nothing OrElse o Is DBNull.Value Then Return ""
+                    Dim xmlDoc As New XmlDocument()
+                    xmlDoc.LoadXml(CStr(o))
+                    Return ObtenerCodigoSeguridadDesdeXml(xmlDoc)
+                End Using
+            End Using
+        Catch ex As Exception
+            Helper.RegistrarLogCliente("ObtenerCodigoSeguridadDesdeBitacora: " & ex.Message)
+            Return ""
+        End Try
+    End Function
+
+    Private Shared Function ParamCodigoSeguridad(codigo As String) As SqlParameter
+        Dim c = If(codigo, "").Trim()
+        If c.Length < 6 Then
+            Return New SqlParameter("@codigoseguridad", CObj(DBNull.Value))
         End If
+        Return New SqlParameter("@codigoseguridad", c)
     End Function
     Private Shared Function EjecutarConsultaReader(cadenaConexion As String, consulta As String) As SqlDataReader
         Dim qLog As String = If(consulta, "")
@@ -10208,7 +10267,9 @@ SELECT @nuevo;"
 
             Dim respuestaConsulta As String = ConsultarEstadoConReintentos(trackId, token)
             Try
-                ProcesarRespuestaAPI(RncCliente, tipoECF, cadenaConexion, emp_codigo, suc_codigo, respuestaConsulta, facNumero, xmlFacturaFirmada, codigoSeguridad, "", "", sup_codigo, fechaFirma, isNotaCredito)
+                ' Siempre persistir como tipo 34 (NC/devolucion). Si Delphi manda 31/45, SP_UPDATEDATOSDGI
+                ' actualizaria Facturas y Devolucion quedaria sin codigo de seguridad ni QR.
+                ProcesarRespuestaAPI(RncCliente, "34", cadenaConexion, emp_codigo, suc_codigo, respuestaConsulta, facNumero, xmlFacturaFirmada, codigoSeguridad, "", "", sup_codigo, fechaFirma, isNotaCredito)
 
             Catch ex As Exception
                 Helper.RegistrarLogCliente("ProcesarRespuestaAPI EX: " & ex.ToString())
