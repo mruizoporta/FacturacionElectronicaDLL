@@ -1490,64 +1490,11 @@ Public Class FacturaElectronicaService
                 })
             End If
 
-            Dim bit = Helper.ObtenerUltimaBitacoraDgii(cadenaConexion, doc)
-            Dim trackExistente = If(bit IsNot Nothing, If(bit.TrackId, "").Trim(), "")
-            If String.IsNullOrWhiteSpace(trackExistente) Then trackExistente = If(estadoPrev.TrackIdLuganis, "").Trim()
-
-            If String.IsNullOrWhiteSpace(trackExistente) AndAlso Not Helper.DocumentoYaTransmitido(estadoPrev) Then
-                Return Nothing
-            End If
-
-            If Not String.IsNullOrWhiteSpace(trackExistente) Then
-                Try
-                    Dim token As String = GlobalVariables.token
-                    If String.IsNullOrWhiteSpace(token) Then
-                        Seguridad.ObtenerToken()
-                        token = GlobalVariables.token
-                    End If
-                    Dim respExist = ConsultarEstadoConReintentos(trackExistente, token)
-                    Dim parsedExist = Helper.ParsearRespuestaDgii(respExist)
-                    ' El trackId debe ser de ESTE documento: si la DGII responde otro eNCF
-                    ' (p. ej. una factura con el mismo número), no reutilizar ese estado.
-                    Dim encfDoc = EncFYaAsignado(estadoPrev)
-                    Dim encfResp = If(parsedExist.Encf, "").Trim()
-                    If encfDoc <> "" AndAlso encfResp <> "" AndAlso
-                       Not String.Equals(encfDoc, encfResp, StringComparison.OrdinalIgnoreCase) Then
-                        Helper.RegistrarLogCliente("[DGII] Reconsulta ignorada: trackId=" & trackExistente &
-                            " es de eNCF=" & encfResp & " y el documento tiene eNCF=" & encfDoc & ". Se envía normal.")
-                        Return Nothing
-                    End If
-                    If parsedExist.Aceptado Then
-                        Helper.RegistrarLogCliente("[DGII] Reconsulta: ACEPTADO. No se reenvía. trackId=" & trackExistente)
-                        Return PersistirReconsultaDgii(doc, tipoECF, isNotaCredito, respExist)
-                    End If
-                    If parsedExist.EsPendiente Then
-                        Helper.RegistrarLogCliente("[DGII] Reconsulta: PENDIENTE. No se reenvía ni se asigna otro eNCF. trackId=" & trackExistente)
-                        Return PersistirReconsultaDgii(doc, tipoECF, isNotaCredito, respExist)
-                    End If
-                    If parsedExist.EsRechazado AndAlso
-                       (String.Equals(If(parsedExist.CodigoMensaje, "").Trim(), "1209", StringComparison.OrdinalIgnoreCase) OrElse
-                        ContainsSecuenciaYaUsada(parsedExist.Mensaje)) Then
-                        Helper.RegistrarLogCliente("[DGII] Reconsulta 1209: la secuencia ya está en DGII. No se emite otro eNCF.")
-                        parsedExist.EsPendiente = True
-                        parsedExist.EsRechazado = False
-                        parsedExist.Mensaje = "Secuencia ya utilizada en DGII (posible aceptación previa). No se reenvía."
-                        Return Helper.ConstruirJsonRespuestaOperacion(parsedExist, respExist)
-                    End If
-                Catch exCons As Exception
-                    Helper.RegistrarLogCliente("[DGII] Reconsulta previa falló: " & exCons.Message)
-                    If Helper.DocumentoYaTransmitido(estadoPrev) Then
-                        Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
-                            .Estado = "Pendiente",
-                            .EsPendiente = True,
-                            .Encf = estadoPrev.ENCF,
-                            .TrackId = trackExistente,
-                            .Mensaje = "Ya fue enviado; no se pudo confirmar el estado. No se reenvía para evitar duplicado."
-                        })
-                    End If
-                End Try
-            ElseIf Helper.DocumentoYaTransmitido(estadoPrev) Then
-                Helper.RegistrarLogCliente("[DGII] Ya transmitida sin trackId consultable. Se reutiliza eNCF, no se emite otro.")
+            ' No se busca un trackId previo en la bitácora: mezcla todos los tipos de
+            ' documento (una devolución #233 encontraba la factura #233). La decisión
+            ' sale solo de la tabla del propio documento: si no está aceptado, se envía.
+            If Helper.DocumentoYaTransmitido(estadoPrev) Then
+                Helper.RegistrarLogCliente("[DGII] Transmitido y no aceptado. Se envía de nuevo. eNCF actual=" & If(estadoPrev.ENCF, "") & " tipo=" & doc.TipoDocumento)
             End If
         Catch ex As Exception
             Helper.RegistrarLogCliente("[DGII] IntentarReusarEnvioExistenteDgii EX: " & ex.Message)
