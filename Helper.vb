@@ -183,6 +183,24 @@ Public Class Helper
         Return If(esRestBar, BitacoraTipoRestBar, BitacoraTipoMontosTicket)
     End Function
 
+    ''' <summary>
+    ''' tipo en BitacoraFacturacionElectronicaDGII según el documento. Evita que una
+    ''' devolución/NC/compra con el mismo número tome el trackId de una factura.
+    ''' </summary>
+    Public Shared Function ResolverTipoBitacoraDocumento(doc As EncfDocumentoRef) As String
+        If doc Is Nothing Then Return BitacoraTipoFacturas
+        Select Case If(doc.TipoDocumento, "").Trim().ToUpperInvariant()
+            Case TipoEncfCompra : Return BitacoraTipoProvFacturas
+            Case TipoEncfDesembolso : Return BitacoraTipoDesembolsos
+            Case TipoEncfDevolucion : Return BitacoraTipoDevolucion
+            Case TipoEncfNotaCredito : Return BitacoraTipoNotaCredito
+            Case TipoEncfNotaDebito : Return BitacoraTipoNotasDebito
+            Case TipoEncfPos : Return BitacoraTipoMontosTicket
+            Case TipoEncfResBar : Return BitacoraTipoRestBar
+            Case Else : Return BitacoraTipoFacturas
+        End Select
+    End Function
+
     Private Shared Function NormalizarForma(forma As String) As String
         Dim f = If(forma, "").Trim()
         If f.Length = 0 Then Return "A"
@@ -500,8 +518,11 @@ ORDER BY b.Fecha_Envio DESC;"
 "SELECT TOP (1) b.MensajeError FROM dbo.BitacoraFacturacionElectronicaDGII b
 WHERE b.emp_codigo = @emp
   AND LTRIM(RTRIM(CONVERT(VARCHAR(30), b.fac_numero))) = LTRIM(RTRIM(@fac))
+  AND (b.tipo = @tipo_bit OR (b.tipo IS NULL AND @tipo_bit = 'FACTURAS'))
   AND b.MensajeError IS NOT NULL AND LTRIM(RTRIM(b.MensajeError)) <> ''
 ORDER BY b.Fecha_Envio DESC;"
+            ' Filas viejas sin tipo son de facturas: solo aplican a facturas.
+            tipoBitacora = ResolverTipoBitacoraDocumento(doc)
         End If
         Try
             Using conn As New SqlConnection(cadenaConexion)
@@ -510,9 +531,9 @@ ORDER BY b.Fecha_Envio DESC;"
                     Dim numTxt = If(Not String.IsNullOrWhiteSpace(doc.DocNumeroStr), doc.DocNumeroStr,
                                     If(doc.DocNumero.HasValue, doc.DocNumero.Value.ToString(), "0"))
                     cmd.Parameters.Add("@fac", SqlDbType.VarChar, 30).Value = numTxt
+                    cmd.Parameters.Add("@tipo_bit", SqlDbType.VarChar, 30).Value = tipoBitacora
                     If doc.TipoDocumento.Equals(TipoEncfPos, StringComparison.OrdinalIgnoreCase) OrElse
                        doc.TipoDocumento.Equals(TipoEncfResBar, StringComparison.OrdinalIgnoreCase) Then
-                        cmd.Parameters.Add("@tipo_bit", SqlDbType.VarChar, 30).Value = tipoBitacora
                         cmd.Parameters.Add("@usu", SqlDbType.VarChar, 50).Value = If(doc.UsuCodigo, 0).ToString()
                         cmd.Parameters.Add("@caja", SqlDbType.VarChar, 50).Value = If(doc.CajaCodigo, 0).ToString()
                     End If
@@ -709,7 +730,10 @@ ORDER BY b.Fecha_Envio DESC;"
 FROM dbo.BitacoraFacturacionElectronicaDGII b
 WHERE b.emp_codigo = @emp
   AND LTRIM(RTRIM(CONVERT(VARCHAR(30), b.fac_numero))) = LTRIM(RTRIM(@fac))
+  AND (b.tipo = @tipo_bit OR (b.tipo IS NULL AND @tipo_bit = 'FACTURAS'))
 ORDER BY b.Fecha_Envio DESC;"
+            ' Filas viejas sin tipo son de facturas: solo se reutilizan para facturas.
+            tipoBitacora = ResolverTipoBitacoraDocumento(doc)
         End If
         Try
             Using conn As New SqlConnection(cadenaConexion)
@@ -718,9 +742,9 @@ ORDER BY b.Fecha_Envio DESC;"
                     Dim numTxt = If(Not String.IsNullOrWhiteSpace(doc.DocNumeroStr), doc.DocNumeroStr,
                                     If(doc.DocNumero.HasValue, doc.DocNumero.Value.ToString(), "0"))
                     cmd.Parameters.Add("@fac", SqlDbType.VarChar, 30).Value = numTxt
+                    cmd.Parameters.Add("@tipo_bit", SqlDbType.VarChar, 30).Value = tipoBitacora
                     If doc.TipoDocumento.Equals(TipoEncfPos, StringComparison.OrdinalIgnoreCase) OrElse
                        doc.TipoDocumento.Equals(TipoEncfResBar, StringComparison.OrdinalIgnoreCase) Then
-                        cmd.Parameters.Add("@tipo_bit", SqlDbType.VarChar, 30).Value = tipoBitacora
                         cmd.Parameters.Add("@usu", SqlDbType.VarChar, 50).Value = If(doc.UsuCodigo, 0).ToString()
                         cmd.Parameters.Add("@caja", SqlDbType.VarChar, 50).Value = If(doc.CajaCodigo, 0).ToString()
                     End If

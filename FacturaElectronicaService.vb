@@ -1490,54 +1490,11 @@ Public Class FacturaElectronicaService
                 })
             End If
 
-            Dim bit = Helper.ObtenerUltimaBitacoraDgii(cadenaConexion, doc)
-            Dim trackExistente = If(bit IsNot Nothing, If(bit.TrackId, "").Trim(), "")
-            If String.IsNullOrWhiteSpace(trackExistente) Then trackExistente = If(estadoPrev.TrackIdLuganis, "").Trim()
-
-            If String.IsNullOrWhiteSpace(trackExistente) AndAlso Not Helper.DocumentoYaTransmitido(estadoPrev) Then
-                Return Nothing
-            End If
-
-            If Not String.IsNullOrWhiteSpace(trackExistente) Then
-                Try
-                    Dim token As String = GlobalVariables.token
-                    If String.IsNullOrWhiteSpace(token) Then
-                        Seguridad.ObtenerToken()
-                        token = GlobalVariables.token
-                    End If
-                    Dim respExist = ConsultarEstadoConReintentos(trackExistente, token)
-                    Dim parsedExist = Helper.ParsearRespuestaDgii(respExist)
-                    If parsedExist.Aceptado Then
-                        Helper.RegistrarLogCliente("[DGII] Reconsulta: ACEPTADO. No se reenvía. trackId=" & trackExistente)
-                        Return PersistirReconsultaDgii(doc, tipoECF, isNotaCredito, respExist)
-                    End If
-                    If parsedExist.EsPendiente Then
-                        Helper.RegistrarLogCliente("[DGII] Reconsulta: PENDIENTE. No se reenvía ni se asigna otro eNCF. trackId=" & trackExistente)
-                        Return PersistirReconsultaDgii(doc, tipoECF, isNotaCredito, respExist)
-                    End If
-                    If parsedExist.EsRechazado AndAlso
-                       (String.Equals(If(parsedExist.CodigoMensaje, "").Trim(), "1209", StringComparison.OrdinalIgnoreCase) OrElse
-                        ContainsSecuenciaYaUsada(parsedExist.Mensaje)) Then
-                        Helper.RegistrarLogCliente("[DGII] Reconsulta 1209: la secuencia ya está en DGII. No se emite otro eNCF.")
-                        parsedExist.EsPendiente = True
-                        parsedExist.EsRechazado = False
-                        parsedExist.Mensaje = "Secuencia ya utilizada en DGII (posible aceptación previa). No se reenvía."
-                        Return Helper.ConstruirJsonRespuestaOperacion(parsedExist, respExist)
-                    End If
-                Catch exCons As Exception
-                    Helper.RegistrarLogCliente("[DGII] Reconsulta previa falló: " & exCons.Message)
-                    If Helper.DocumentoYaTransmitido(estadoPrev) Then
-                        Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
-                            .Estado = "Pendiente",
-                            .EsPendiente = True,
-                            .Encf = estadoPrev.ENCF,
-                            .TrackId = trackExistente,
-                            .Mensaje = "Ya fue enviado; no se pudo confirmar el estado. No se reenvía para evitar duplicado."
-                        })
-                    End If
-                End Try
-            ElseIf Helper.DocumentoYaTransmitido(estadoPrev) Then
-                Helper.RegistrarLogCliente("[DGII] Ya transmitida sin trackId consultable. Se reutiliza eNCF, no se emite otro.")
+            ' No se busca un trackId previo en la bitácora: mezcla todos los tipos de
+            ' documento (una devolución #233 encontraba la factura #233). La decisión
+            ' sale solo de la tabla del propio documento: si no está aceptado, se envía.
+            If Helper.DocumentoYaTransmitido(estadoPrev) Then
+                Helper.RegistrarLogCliente("[DGII] Transmitido y no aceptado. Se envía de nuevo. eNCF actual=" & If(estadoPrev.ENCF, "") & " tipo=" & doc.TipoDocumento)
             End If
         Catch ex As Exception
             Helper.RegistrarLogCliente("[DGII] IntentarReusarEnvioExistenteDgii EX: " & ex.Message)
@@ -8620,7 +8577,7 @@ SELECT @nuevo;"
             Dim sql As String =
                 "SELECT TOP 1 XML_Firmado FROM dbo.BitacoraFacturacionElectronicaDGII " &
                 "WHERE emp_codigo = @emp AND fac_numero = @fac " &
-                "AND (@tipo IS NULL OR tipo = @tipo OR tipo IS NULL) " &
+                "AND (@tipo IS NULL OR tipo = @tipo OR (tipo IS NULL AND @tipo = 'FACTURAS')) " &
                 "AND XML_Firmado IS NOT NULL AND LEN(XML_Firmado) > 50 " &
                 "ORDER BY Fecha_Envio DESC"
             Using conn As New SqlConnection(cadenaConexion)
