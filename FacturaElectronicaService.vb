@@ -1507,6 +1507,16 @@ Public Class FacturaElectronicaService
                     End If
                     Dim respExist = ConsultarEstadoConReintentos(trackExistente, token)
                     Dim parsedExist = Helper.ParsearRespuestaDgii(respExist)
+                    ' El trackId debe ser de ESTE documento: si la DGII responde otro eNCF
+                    ' (p. ej. una factura con el mismo número), no reutilizar ese estado.
+                    Dim encfDoc = EncFYaAsignado(estadoPrev)
+                    Dim encfResp = If(parsedExist.Encf, "").Trim()
+                    If encfDoc <> "" AndAlso encfResp <> "" AndAlso
+                       Not String.Equals(encfDoc, encfResp, StringComparison.OrdinalIgnoreCase) Then
+                        Helper.RegistrarLogCliente("[DGII] Reconsulta ignorada: trackId=" & trackExistente &
+                            " es de eNCF=" & encfResp & " y el documento tiene eNCF=" & encfDoc & ". Se envía normal.")
+                        Return Nothing
+                    End If
                     If parsedExist.Aceptado Then
                         Helper.RegistrarLogCliente("[DGII] Reconsulta: ACEPTADO. No se reenvía. trackId=" & trackExistente)
                         Return PersistirReconsultaDgii(doc, tipoECF, isNotaCredito, respExist)
@@ -8620,7 +8630,7 @@ SELECT @nuevo;"
             Dim sql As String =
                 "SELECT TOP 1 XML_Firmado FROM dbo.BitacoraFacturacionElectronicaDGII " &
                 "WHERE emp_codigo = @emp AND fac_numero = @fac " &
-                "AND (@tipo IS NULL OR tipo = @tipo OR tipo IS NULL) " &
+                "AND (@tipo IS NULL OR tipo = @tipo OR (tipo IS NULL AND @tipo = 'FACTURAS')) " &
                 "AND XML_Firmado IS NOT NULL AND LEN(XML_Firmado) > 50 " &
                 "ORDER BY Fecha_Envio DESC"
             Using conn As New SqlConnection(cadenaConexion)
