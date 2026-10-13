@@ -1,4 +1,5 @@
 Imports Newtonsoft.Json.Linq
+Imports System.Globalization
 Imports System.IO
 Imports System.Net
 Imports System.Security.Cryptography
@@ -11,6 +12,64 @@ Public Class Seguridad
 
     ''' <summary>Último error detallado al obtener token DGII (para logs y mensajes al cliente).</summary>
     Public Shared Property UltimoErrorToken As String = ""
+
+    Private Shared tokenExpiraUtc As DateTime = DateTime.MinValue
+    Private Shared ReadOnly tokenLock As New Object()
+    Private Const MinutosMargenToken As Integer = 2
+    Private Const MinutosFallbackToken As Integer = 50
+
+    Public Shared Sub InvalidarToken()
+        SyncLock tokenLock
+            GlobalVariables.token = String.Empty
+            tokenExpiraUtc = DateTime.MinValue
+        End SyncLock
+    End Sub
+
+    Private Shared Function TokenVigente() As Boolean
+        If String.IsNullOrWhiteSpace(GlobalVariables.token) Then Return False
+        If tokenExpiraUtc = DateTime.MinValue Then Return False
+        Return DateTime.UtcNow.AddMinutes(MinutosMargenToken) < tokenExpiraUtc
+    End Function
+
+    Private Shared Function CalcularExpiracionUtc(token As String, jsonResp As JObject) As DateTime
+        Dim fallback = DateTime.UtcNow.AddMinutes(MinutosFallbackToken)
+
+        If jsonResp IsNot Nothing Then
+            For Each nombre In New String() {"expira", "expiracion", "expires", "expire"}
+                Dim v = jsonResp(nombre)
+                If v Is Nothing Then Continue For
+                Dim d As DateTime
+                If DateTime.TryParse(v.ToString(), CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, d) OrElse
+                   DateTime.TryParse(v.ToString(), d) Then
+                    If d.Kind = DateTimeKind.Unspecified Then
+                        d = DateTime.SpecifyKind(d, DateTimeKind.Local)
+                    End If
+                    Return d.ToUniversalTime()
+                End If
+            Next
+        End If
+
+        Try
+            Dim parts = If(token, "").Split("."c)
+            If parts.Length >= 2 Then
+                Dim payload = parts(1).Replace("-"c, "+"c).Replace("_"c, "/"c)
+                Select Case payload.Length Mod 4
+                    Case 2 : payload &= "=="
+                    Case 3 : payload &= "="
+                End Select
+                Dim json = Encoding.UTF8.GetString(Convert.FromBase64String(payload))
+                Dim jo = JObject.Parse(json)
+                Dim exp = jo("exp")
+                Dim unix As Long
+                If exp IsNot Nothing AndAlso Long.TryParse(exp.ToString(), unix) Then
+                    Return New DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(unix)
+                End If
+            End If
+        Catch
+        End Try
+
+        Return fallback
+    End Function
 
     Private Shared Sub RegistrarErrorToken(mensaje As String)
         UltimoErrorToken = If(mensaje, "")
@@ -87,6 +146,8 @@ Public Class Seguridad
             request.ContentType = "application/xml"
             request.Timeout = 60000
             request.ReadWriteTimeout = 60000
+            request.KeepAlive = False
+            request.ServicePoint.Expect100Continue = False
 
             Dim response As HttpWebResponse = CType(request.GetResponse(), HttpWebResponse)
 
@@ -118,8 +179,9 @@ Public Class Seguridad
                 msg &= " | Causa probable: sin acceso a Internet/firewall/DNS hacia ecf.dgii.gov.do"
             ElseIf http Is Nothing AndAlso ex.Status = WebExceptionStatus.TrustFailure Then
                 msg &= " | Causa probable: problema TLS/certificado SSL del servidor DGII"
-            ElseIf http Is Nothing AndAlso ex.Status = WebExceptionStatus.Timeout Then
-                msg &= " | Causa probable: timeout de red hacia DGII"
+            ElseIf http Is Nothing AndAlso (ex.Status = WebExceptionStatus.Timeout OrElse
+                    (ex.Message IsNot Nothing AndAlso ex.Message.IndexOf("failed to respond", StringComparison.OrdinalIgnoreCase) >= 0)) Then
+                msg &= " | El PC no recibe respuesta de ecf.dgii.gov.do:443. Abrir HTTPS hacia la DGII en el firewall/antivirus."
             End If
             Throw New Exception(msg, ex)
         Catch ex As Exception
@@ -128,59 +190,84 @@ Public Class Seguridad
     End Function
 
     Public Shared Sub ObtenerToken()
-        UltimoErrorToken = ""
-        Try
-            Dim pathConfigurado = If(GlobalVariables.pathCertificado, "").Trim()
-            Dim pathCert As String = ResolverRutaCertificado(pathConfigurado)
-            Dim passCert As String = GlobalVariables.passCertificado
-            Dim carpetaDll = RutaHelper.ObtenerRutaBaseDLL()
-            Dim carpetaCerts = Path.Combine(carpetaDll, "certificados")
-            Dim urlBase = If(GlobalVariables.url_base, "")
+        SyncLock tokenLock
+            UltimoErrorToken = ""
+            Try
+                If TokenVigente() Then
+                    Helper.RegistrarLogCliente(
+                        "[TOKEN] Reuso token vigente hasta " &
+                        tokenExpiraUtc.ToLocalTime().ToString("HH:mm:ss"))
+                    Return
+                End If
 
-            Helper.RegistrarLogCliente(
-                "[TOKEN] Inicio ObtenerToken | url_base=" & urlBase &
-                " | pathCertificado(config)=" & pathConfigurado &
-                " | pathCert(resuelto)=" & pathCert &
-                " | passConfigurado=" & If(String.IsNullOrEmpty(passCert), "NO", "SI(len=" & passCert.Length.ToString() & ")") &
-                " | carpetaDLL=" & carpetaDll)
+                GlobalVariables.token = String.Empty
+                tokenExpiraUtc = DateTime.MinValue
 
-            If pathConfigurado = "" Then
-                RegistrarErrorToken(
-                    "No se pudo obtener el token DGII: pathCertificado vacío en config.ini. " &
-                    "Coloque el archivo .p12 en: " & carpetaCerts &
-                    " y configure pathCertificado=certificados\nombre.p12 (junto a la DLL: " & carpetaDll & ").")
-                Return
-            End If
+                Dim pathConfigurado = If(GlobalVariables.pathCertificado, "").Trim()
+                Dim pathCert As String = ResolverRutaCertificado(pathConfigurado)
+                Dim passCert As String = GlobalVariables.passCertificado
+                Dim carpetaDll = RutaHelper.ObtenerRutaBaseDLL()
+                Dim carpetaCerts = Path.Combine(carpetaDll, "certificados")
+                Dim urlBase = If(GlobalVariables.url_base, "")
 
-            If Not File.Exists(pathCert) Then
-                RegistrarErrorToken(
-                    "No se pudo obtener el token DGII: certificado no encontrado. " &
-                    "Buscado en: " & pathCert & ". " &
-                    "El .p12 debe estar en la carpeta certificados junto a FacturacionElectronicaDGII.dll (" &
-                    carpetaCerts & ") y pathCertificado en config.ini debe apuntar ahí (ej. certificados\mi_cert.p12).")
-                Return
-            End If
+                Helper.RegistrarLogCliente(
+                    "[TOKEN] Inicio ObtenerToken | url_base=" & urlBase &
+                    " | pathCertificado(config)=" & pathConfigurado &
+                    " | pathCert(resuelto)=" & pathCert &
+                    " | passConfigurado=" & If(String.IsNullOrEmpty(passCert), "NO", "SI(len=" & passCert.Length.ToString() & ")") &
+                    " | carpetaDLL=" & carpetaDll)
 
-            Dim token = ObtenerTokenDgii(urlBase, pathCert, passCert)
-            If token = "" Then
-                Dim detalle = If(String.IsNullOrWhiteSpace(UltimoErrorToken),
-                    "sin detalle adicional (revise logs [TOKEN] anteriores)",
-                    UltimoErrorToken)
-                RegistrarErrorToken(
-                    "No se pudo obtener el token DGII con el certificado: " & pathCert & ". " &
-                    "Detalle: " & detalle &
-                    " | Verifique: 1) passCertificado, 2) url_base (TesteCF/CerteCF/ecf), 3) .p12 vigente de la DGII. " &
-                    "Ubicación: " & carpetaCerts)
-                Return
-            End If
-            GlobalVariables.token = token
-            Helper.RegistrarLogCliente("[TOKEN] Token DGII obtenido OK (len=" & token.Length.ToString() & ")")
-        Catch ex As Exception
-            RegistrarErrorToken("Error al obtener el token DGII: " & DetalleExcepcion(ex) &
-                " | Carpeta DLL: " & RutaHelper.ObtenerRutaBaseDLL() &
-                " | Cert configurado: " & If(GlobalVariables.pathCertificado, "") &
-                " | url_base: " & If(GlobalVariables.url_base, ""))
-        End Try
+                If pathConfigurado = "" Then
+                    RegistrarErrorToken(
+                        "No se pudo obtener el token DGII: pathCertificado vacío en config.ini. " &
+                        "Coloque el archivo .p12 en: " & carpetaCerts &
+                        " y configure pathCertificado=certificados\nombre.p12 (junto a la DLL: " & carpetaDll & ").")
+                    Return
+                End If
+
+                If Not File.Exists(pathCert) Then
+                    RegistrarErrorToken(
+                        "No se pudo obtener el token DGII: certificado no encontrado. " &
+                        "Buscado en: " & pathCert & ". " &
+                        "El .p12 debe estar en la carpeta certificados junto a FacturacionElectronicaDGII.dll (" &
+                        carpetaCerts & ") y pathCertificado en config.ini debe apuntar ahí (ej. certificados\mi_cert.p12).")
+                    Return
+                End If
+
+                Dim token As String = ""
+                For intento As Integer = 1 To 3
+                    token = ObtenerTokenDgii(urlBase, pathCert, passCert)
+                    If token <> "" Then Exit For
+                    If intento < 3 Then
+                        Helper.RegistrarLogCliente("[TOKEN] Reintento " & (intento + 1).ToString() & "/3 tras fallo al descargar semilla")
+                        Threading.Thread.Sleep(2000)
+                    End If
+                Next
+                If token = "" Then
+                    Dim detalle = If(String.IsNullOrWhiteSpace(UltimoErrorToken),
+                        "sin detalle adicional (revise logs [TOKEN] anteriores)",
+                        UltimoErrorToken)
+                    RegistrarErrorToken(
+                        "No se pudo obtener el token DGII con el certificado: " & pathCert & ". " &
+                        "Detalle: " & detalle &
+                        " | Verifique: 1) passCertificado, 2) url_base (TesteCF/CerteCF/ecf), 3) .p12 vigente de la DGII. " &
+                        "Ubicación: " & carpetaCerts)
+                    Return
+                End If
+                GlobalVariables.token = token
+                If tokenExpiraUtc = DateTime.MinValue Then
+                    tokenExpiraUtc = CalcularExpiracionUtc(token, Nothing)
+                End If
+                Helper.RegistrarLogCliente(
+                    "[TOKEN] Token DGII obtenido OK (len=" & token.Length.ToString() &
+                    ", vale hasta " & tokenExpiraUtc.ToLocalTime().ToString("HH:mm:ss") & ")")
+            Catch ex As Exception
+                RegistrarErrorToken("Error al obtener el token DGII: " & DetalleExcepcion(ex) &
+                    " | Carpeta DLL: " & RutaHelper.ObtenerRutaBaseDLL() &
+                    " | Cert configurado: " & If(GlobalVariables.pathCertificado, "") &
+                    " | url_base: " & If(GlobalVariables.url_base, ""))
+            End Try
+        End SyncLock
     End Sub
 
     ''' <summary>Token JWT DGII sin depender de MessageBox (para consultas desde Delphi).</summary>
@@ -228,7 +315,9 @@ Public Class Seguridad
                 RegistrarErrorToken("ObtenerTokenDgii: la DGII no devolvió campo 'token'. Respuesta: " & preview)
                 Return ""
             End If
-            Return t.ToString()
+            Dim tok = t.ToString()
+            tokenExpiraUtc = CalcularExpiracionUtc(tok, jsonObj)
+            Return tok
         Catch ex As Exception
             RegistrarErrorToken("ObtenerTokenDgii EX en paso=" & paso &
                 " | cert=" & pathCert &

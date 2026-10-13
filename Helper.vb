@@ -11,8 +11,39 @@ Imports Newtonsoft.Json
 Imports Newtonsoft.Json.Linq
 
 Public Class Helper
+    ''' <summary>
+    ''' Delphi/ADO guarda Provider=SQLOLEDB en config.ini; SqlClient no lo acepta
+    ''' ("Keyword not supported: 'provider'").
+    ''' </summary>
+    Public Shared Function NormalizarCadenaSqlClient(cadena As String) As String
+        If String.IsNullOrWhiteSpace(cadena) Then Return If(cadena, "")
+        Dim deny As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase) From {
+            "Provider",
+            "Extended Properties",
+            "Auto Translate",
+            "Use Procedure for Prepare",
+            "Tag with column collation when possible",
+            "OLE DB Services",
+            "Network Library"
+        }
+        Dim keep As New List(Of String)
+        For Each parte In cadena.Split(";"c)
+            Dim t = parte.Trim()
+            If t = "" Then Continue For
+            Dim eq = t.IndexOf("="c)
+            If eq <= 0 Then
+                keep.Add(t)
+                Continue For
+            End If
+            Dim key = t.Substring(0, eq).Trim()
+            If deny.Contains(key) Then Continue For
+            keep.Add(t)
+        Next
+        Return String.Join(";", keep)
+    End Function
+
     Public Shared Sub EjecutarProcedimientoAlmacenado(cadenaConexion As String, nombreProcedimiento As String, parametros As SqlParameter())
-        Using conn As New SqlConnection(cadenaConexion)
+        Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
             Using cmd As New SqlCommand(nombreProcedimiento, conn)
                 cmd.CommandType = CommandType.StoredProcedure
                 If parametros IsNot Nothing Then
@@ -270,7 +301,7 @@ WHERE EMP_CODIGO=@emp AND SUC_CODIGO=@suc AND CajeroID=@usu AND CajaID=@caja AND
         End Select
 
         Try
-            Using conn As New SqlConnection(cadenaConexion)
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
                 Using cmd As New SqlCommand(sql, conn)
                     cmd.Parameters.Add("@emp", SqlDbType.Int).Value = doc.EmpCodigo
                     cmd.Parameters.Add("@suc", SqlDbType.Int).Value = doc.SucCodigo
@@ -394,7 +425,7 @@ SET tipo_evento = @tipo_evento,
 WHERE tipo_documento = @tipo AND doc_clave = @clave AND eNCF_nuevo = @encf_nue;"
 
         Try
-            Using conn As New SqlConnection(cadenaConexion)
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
                 conn.Open()
                 Using cmd As New SqlCommand(sqlInsert, conn)
                     cmd.Parameters.Add("@tipo", SqlDbType.VarChar, 30).Value = doc.TipoDocumento.ToUpperInvariant()
@@ -525,7 +556,7 @@ ORDER BY b.Fecha_Envio DESC;"
             tipoBitacora = ResolverTipoBitacoraDocumento(doc)
         End If
         Try
-            Using conn As New SqlConnection(cadenaConexion)
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
                 Using cmd As New SqlCommand(sql, conn)
                     cmd.Parameters.Add("@emp", SqlDbType.Int).Value = doc.EmpCodigo
                     Dim numTxt = If(Not String.IsNullOrWhiteSpace(doc.DocNumeroStr), doc.DocNumeroStr,
@@ -736,7 +767,7 @@ ORDER BY b.Fecha_Envio DESC;"
             tipoBitacora = ResolverTipoBitacoraDocumento(doc)
         End If
         Try
-            Using conn As New SqlConnection(cadenaConexion)
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
                 Using cmd As New SqlCommand(sql, conn)
                     cmd.Parameters.Add("@emp", SqlDbType.Int).Value = doc.EmpCodigo
                     Dim numTxt = If(Not String.IsNullOrWhiteSpace(doc.DocNumeroStr), doc.DocNumeroStr,
@@ -771,7 +802,7 @@ ORDER BY b.Fecha_Envio DESC;"
         If String.IsNullOrWhiteSpace(cadenaConexion) OrElse String.IsNullOrWhiteSpace(emp_codigo) Then Return False
         Const sql As String = "SELECT Usa_FacturacionElectronica FROM dbo.Parametros WHERE emp_codigo = @emp"
         Try
-            Using conn As New SqlConnection(cadenaConexion)
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
                 Using cmd As New SqlCommand(sql, conn)
                     cmd.Parameters.Add("@emp", SqlDbType.Int).Value = Convert.ToInt32(emp_codigo.Trim())
                     conn.Open()
@@ -789,7 +820,7 @@ ORDER BY b.Fecha_Envio DESC;"
         If String.IsNullOrWhiteSpace(cadenaConexion) OrElse String.IsNullOrWhiteSpace(emp_codigo) Then Return ""
         Const sql As String = "SELECT URL_FacturacionElectronica FROM dbo.Parametros WHERE emp_codigo = @emp"
         Try
-            Using conn As New SqlConnection(cadenaConexion)
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
                 Using cmd As New SqlCommand(sql, conn)
                     cmd.Parameters.Add("@emp", SqlDbType.Int).Value = Convert.ToInt32(emp_codigo.Trim())
                     conn.Open()
@@ -828,7 +859,7 @@ WHERE tipo_documento = @tipo AND doc_clave = @clave
   AND motivo_rechazo IS NOT NULL AND LTRIM(RTRIM(motivo_rechazo)) <> ''
 ORDER BY secuencia_encf DESC, fecha_registro DESC;"
         Try
-            Using conn As New SqlConnection(cadenaConexion)
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
                 Using cmd As New SqlCommand(sql, conn)
                     cmd.Parameters.Add("@tipo", SqlDbType.VarChar, 30).Value = doc.TipoDocumento.ToUpperInvariant()
                     cmd.Parameters.Add("@clave", SqlDbType.VarChar, 120).Value = doc.DocClave
@@ -847,7 +878,7 @@ ORDER BY secuencia_encf DESC, fecha_registro DESC;"
                                         trackingID As String, codigoError As String, mensajeError As String,
                                         xmlFirmado As String, fechaEnvio As DateTime, usu_codigo As String, caja As String,
                                         tipo As String)
-        Using conn As New SqlConnection(cadenaConexion)
+        Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
             Using cmd As New SqlCommand("INSERT INTO BitacoraFacturacionElectronicaDGII (emp_codigo, fac_numero, Estado, trackingID, CodigoError, MensajeError, XML_Firmado, Fecha_Envio, usu_codigo, caja, tipo) " &
                                     "VALUES (@emp_codigo, @fac_numero, @Estado, @trackingID, @CodigoError, @MensajeError, @XML_Firmado, @Fecha_Envio, @usu_codigo, @caja, @tipo)", conn)
 
