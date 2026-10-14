@@ -23,8 +23,7 @@ Public Class Helper
             "Auto Translate",
             "Use Procedure for Prepare",
             "Tag with column collation when possible",
-            "OLE DB Services",
-            "Network Library"
+            "OLE DB Services"
         }
         Dim keep As New List(Of String)
         For Each parte In cadena.Split(";"c)
