@@ -339,6 +339,8 @@ Public Class FacturaElectronicaService
             CargarConfiguracion()
             Dim xmlFactura As XmlDocument
             Seguridad.ObtenerToken()
+            Dim errTok = ErrorSiTokenVacio()
+            If errTok IsNot Nothing Then Return errTok
 
             Dim jsonYaEnviado = IntentarReusarEnvioExistenteDgii(
                 emp, suc, facNumero, facForma, tfaCodigo, tipoECF, False)
@@ -388,6 +390,10 @@ Public Class FacturaElectronicaService
 
             ' Paso 4: Enviar el XML firmado
             Dim trackId As String = EnviarXMLFacturaFirmado(xmlFacturaFirmada, token, glbncfEnvia, empRnc)
+            If TrackIdEsError(trackId) Then
+                Helper.RegistrarLogCliente("[DGII] NO ENVIADA (sin trackId) " & glbncfEnvia & ": " & trackId)
+                Return JsonErrorDgii(If(String.IsNullOrWhiteSpace(trackId), "La DGII no devolvio trackId", trackId))
+            End If
 
             ' Paso 5: Consultar el estado de la factura
             Dim respuestaConsulta As String = ConsultarEstadoConReintentos(trackId, token)
@@ -1411,6 +1417,52 @@ Public Class FacturaElectronicaService
         Return If(estado.ENCF, "").Trim()
     End Function
 
+    Private Shared Function JsonErrorDgii(mensaje As String) As String
+        Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
+            .Estado = "Error",
+            .Mensaje = If(mensaje, "Error DGII"),
+            .Aceptado = False
+        })
+    End Function
+
+    Private Shared Function ErrorSiTokenVacio() As String
+        If Not String.IsNullOrWhiteSpace(GlobalVariables.token) Then Return Nothing
+        Dim det = If(String.IsNullOrWhiteSpace(Seguridad.UltimoErrorToken), "token vacio", Seguridad.UltimoErrorToken)
+        Helper.RegistrarLogCliente("[DGII] ABORTADO sin token. No se asigna eNCF ni se envia. " & det)
+        Return JsonErrorDgii("No se pudo autenticar con la DGII. " & det)
+    End Function
+
+    Private Shared Function ErrorSiTokenVacioTexto() As String
+        If Not String.IsNullOrWhiteSpace(GlobalVariables.token) Then Return Nothing
+        Dim det = If(String.IsNullOrWhiteSpace(Seguridad.UltimoErrorToken), "token vacio", Seguridad.UltimoErrorToken)
+        Helper.RegistrarLogCliente("[DGII] ABORTADO sin token. No se asigna eNCF ni se envia. " & det)
+        Return "Error: No se pudo autenticar con la DGII. " & det
+    End Function
+
+    Private Shared Function TrackIdEsError(trackId As String) As Boolean
+        If String.IsNullOrWhiteSpace(trackId) Then Return True
+        Return trackId.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase) OrElse
+               trackId.StartsWith("[ERROR]", StringComparison.OrdinalIgnoreCase)
+    End Function
+
+    Private Shared Function RespuestaResumenNoEnviada(json As String) As Boolean
+        If String.IsNullOrWhiteSpace(json) Then Return True
+        If json.StartsWith("[ERROR]", StringComparison.OrdinalIgnoreCase) OrElse
+           json.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase) Then Return True
+        Try
+            Dim jo = JObject.Parse(json)
+            If jo("estado") IsNot Nothing Then Return False
+            If jo("error") IsNot Nothing Then Return True
+            If jo("httpStatus") IsNot Nothing Then
+                Dim st As Integer
+                If Integer.TryParse(jo("httpStatus").ToString(), st) AndAlso st >= 400 Then Return True
+            End If
+        Catch
+            Return True
+        End Try
+        Return False
+    End Function
+
     Private Shared Function ConstruirDocReuso(
         empInt As Integer,
         sucInt As Integer,
@@ -1743,8 +1795,11 @@ Public Class FacturaElectronicaService
             isPOS = True
             isResBar = False
             CargarConfiguracion()
+            Helper.RegistrarLogCliente("[POS] EnviarFacturaElectronicaPOS ticket=" & ticket & " usu=" & usu_codigo & " caja=" & caja & " tipo=" & tipoECF)
             Dim xmlFactura As XmlDocument
             Seguridad.ObtenerToken()
+            Dim errTokPos = ErrorSiTokenVacio()
+            If errTokPos IsNot Nothing Then Return errTokPos
 
             Dim empPos As Integer, sucPos As Integer, tickPos As Integer, usuPos As Integer, cajaPos As Integer
             If Integer.TryParse(emp, empPos) AndAlso Integer.TryParse(suc, sucPos) AndAlso Integer.TryParse(ticket, tickPos) Then
@@ -1780,6 +1835,10 @@ Public Class FacturaElectronicaService
 
             ' Paso 4: Enviar el XML firmado
             Dim trackId As String = EnviarXMLFacturaFirmado(xmlFacturaFirmada, token, glbncfEnvia, empRnc)
+            If TrackIdEsError(trackId) Then
+                Helper.RegistrarLogCliente("[DGII] NO ENVIADA POS (sin trackId) " & glbncfEnvia & ": " & trackId)
+                Return JsonErrorDgii(If(String.IsNullOrWhiteSpace(trackId), "La DGII no devolvio trackId", trackId))
+            End If
 
             ' Paso 5: Consultar el estado de la factura
             Dim respuestaConsulta As String = ConsultarEstadoConReintentos(trackId, token)
@@ -1812,6 +1871,8 @@ Public Class FacturaElectronicaService
             CargarConfiguracion()
             Dim xmlFactura As XmlDocument
             Seguridad.ObtenerToken()
+            Dim errTokRb = ErrorSiTokenVacio()
+            If errTokRb IsNot Nothing Then Return errTokRb
 
             Dim empRb As Integer, sucRb As Integer, tickRb As Integer, usuRb As Integer, cajaRb As Integer
             If Integer.TryParse(emp, empRb) AndAlso Integer.TryParse(suc, sucRb) AndAlso Integer.TryParse(ticket, tickRb) Then
@@ -1842,6 +1903,10 @@ Public Class FacturaElectronicaService
             Dim token As String = GlobalVariables.token
 
             Dim trackId As String = EnviarXMLFacturaFirmado(xmlFacturaFirmada, token, glbncfEnvia, empRnc)
+            If TrackIdEsError(trackId) Then
+                Helper.RegistrarLogCliente("[DGII] NO ENVIADA RESBAR (sin trackId) " & glbncfEnvia & ": " & trackId)
+                Return JsonErrorDgii(If(String.IsNullOrWhiteSpace(trackId), "La DGII no devolvio trackId", trackId))
+            End If
 
             Dim respuestaConsulta As String = ConsultarEstadoConReintentos(trackId, token)
             ProcesarRespuestaAPIPOS(RncCliente, tipoECF, cadenaConexion, emp, suc, respuestaConsulta, ticket, xmlFacturaFirmada, codigoSeguridad, usu_codigo, caja, "", fechaFirma)
@@ -1868,7 +1933,10 @@ Public Class FacturaElectronicaService
             isPOS = True
             isResBar = False
             CargarConfiguracion()
+            Helper.RegistrarLogCliente("[POS] EnviarFacturaResumenPOS ticket=" & ticket & " usu=" & usu_codigo & " caja=" & caja & " tipo=" & tipoECF)
             Seguridad.ObtenerToken()
+            Dim errTokPosR = ErrorSiTokenVacioTexto()
+            If errTokPosR IsNot Nothing Then Return errTokPosR
 
             Dim empPosR As Integer, sucPosR As Integer, tickPosR As Integer, usuPosR As Integer, cajaPosR As Integer
             If Integer.TryParse(emp, empPosR) AndAlso Integer.TryParse(suc, sucPosR) AndAlso Integer.TryParse(ticket, tickPosR) Then
@@ -1908,6 +1976,8 @@ Public Class FacturaElectronicaService
             isPOS = False
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokRbR = ErrorSiTokenVacioTexto()
+            If errTokRbR IsNot Nothing Then Return errTokRbR
 
             Dim empRbR As Integer, sucRbR As Integer, tickRbR As Integer, usuRbR As Integer, cajaRbR As Integer
             If Integer.TryParse(emp, empRbR) AndAlso Integer.TryParse(suc, sucRbR) AndAlso Integer.TryParse(ticket, tickRbR) Then
@@ -1946,6 +2016,8 @@ Public Class FacturaElectronicaService
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokRes = ErrorSiTokenVacio()
+            If errTokRes IsNot Nothing Then Return errTokRes
 
             Dim jsonYaRes = IntentarReusarEnvioExistenteDgii(
                 emp, suc, facNumero, facForma, tfaCodigo, tipoECF, False)
@@ -1975,6 +2047,8 @@ Public Class FacturaElectronicaService
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokCompra = ErrorSiTokenVacioTexto()
+            If errTokCompra IsNot Nothing Then Return errTokCompra
 
             Dim esPagoExterior As Boolean = EsCompraPagoExterior(cadenaConexion, emp, sup, facNumero, tipoECF)
             Dim tipoeCFAsignacion As Integer = If(esPagoExterior, 47, 41)
@@ -2193,6 +2267,8 @@ Public Class FacturaElectronicaService
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokDes = ErrorSiTokenVacioTexto()
+            If errTokDes IsNot Nothing Then Return errTokDes
 
             Dim empDes As Integer, sucDes As Integer, numDes As Integer
             If Integer.TryParse(emp, empDes) AndAlso Integer.TryParse(suc, sucDes) AndAlso Integer.TryParse(facNumero, numDes) Then
@@ -2231,6 +2307,8 @@ Public Class FacturaElectronicaService
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokDev = ErrorSiTokenVacioTexto()
+            If errTokDev IsNot Nothing Then Return errTokDev
 
             Dim empDev As Integer, sucDev As Integer, numDev As Integer
             If Integer.TryParse(emp, empDev) AndAlso Integer.TryParse(suc, sucDev) AndAlso Integer.TryParse(facNumero, numDev) Then
@@ -2270,6 +2348,8 @@ Public Class FacturaElectronicaService
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokNc = ErrorSiTokenVacioTexto()
+            If errTokNc IsNot Nothing Then Return errTokNc
 
             Dim empNc As Integer, sucNc As Integer, numNc As Integer
             If Integer.TryParse(emp, empNc) AndAlso Integer.TryParse(suc, sucNc) AndAlso Integer.TryParse(facNumero, numNc) Then
@@ -2309,6 +2389,8 @@ Public Class FacturaElectronicaService
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokDevP = ErrorSiTokenVacioTexto()
+            If errTokDevP IsNot Nothing Then Return errTokDevP
             isPOS = True
             isResBar = False
             Dim empDevP As Integer, sucDevP As Integer, numDevP As Integer
@@ -2348,6 +2430,8 @@ Public Class FacturaElectronicaService
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokDevR = ErrorSiTokenVacioTexto()
+            If errTokDevR IsNot Nothing Then Return errTokDevR
             isResBar = True
             isPOS = False
             Dim empDevR As Integer, sucDevR As Integer, numDevR As Integer
@@ -2809,6 +2893,8 @@ WHERE usu_codigo = @usu
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokNd = ErrorSiTokenVacioTexto()
+            If errTokNd IsNot Nothing Then Return errTokNd
             Dim encfUsar = If(eNCF, "").Trim()
             Dim empNd As Integer, sucNd As Integer, numNd As Integer
             If Integer.TryParse(emp, empNd) AndAlso Integer.TryParse(suc, sucNd) AndAlso Integer.TryParse(facNumero, numNd) Then
@@ -2846,6 +2932,8 @@ WHERE usu_codigo = @usu
         Try
             CargarConfiguracion()
             Seguridad.ObtenerToken()
+            Dim errTokPe = ErrorSiTokenVacioTexto()
+            If errTokPe IsNot Nothing Then Return errTokPe
 
             Dim empPe As Integer, sucPe As Integer, supPe As Integer
             If Integer.TryParse(emp, empPe) AndAlso Integer.TryParse(suc, sucPe) AndAlso Integer.TryParse(sup, supPe) Then
@@ -2890,7 +2978,7 @@ WHERE usu_codigo = @usu
 
             If Not String.Equals(n, rncConfigActual, StringComparison.Ordinal) Then
                 rncConfigActual = n
-                GlobalVariables.token = ""
+                Seguridad.InvalidarToken()
                 configCargada = False
                 cadenaConexion = ""
             End If
@@ -3091,7 +3179,7 @@ WHERE usu_codigo = @usu
             If Not File.Exists(rutaIni) Then Return ""
             Dim ini As New IniReader(rutaIni)
             Dim seccion = ResolverSeccionConfigRnc(ini, rncEmisor)
-            Return LeerClaveIni(ini, "connectionString", seccion)
+            Return Helper.NormalizarCadenaSqlClient(LeerClaveIni(ini, "connectionString", seccion))
         Catch
             Return ""
         End Try
@@ -3184,7 +3272,7 @@ WHERE usu_codigo = @usu
         GlobalVariables.urlfc_base = (ini.Read("urlfc_base", "general") & "").Trim()
 
         Dim seccion = ResolverSeccionConfigRnc(ini, rnc)
-        cadenaConexion = LeerClaveIni(ini, "connectionString", seccion)
+        cadenaConexion = Helper.NormalizarCadenaSqlClient(LeerClaveIni(ini, "connectionString", seccion))
         GlobalVariables.pathCertificado = LeerClaveIni(ini, "pathCertificado", seccion)
         GlobalVariables.passCertificado = LeerClaveIni(ini, "passCertificado", seccion)
 
@@ -6941,7 +7029,14 @@ SELECT @nuevo;"
 
             End If
 
-            Dim facturaReader = EjecutarConsultaReader(cadenaConexion, consultaFactura)
+            Dim facturaReader As SqlDataReader
+            If isPOS Then
+                facturaReader = EjecutarConsultaReaderConRespaldo(
+                    cadenaConexion, consultaFactura,
+                    ConsultaFacturaXmlPosVista(emp_codigo, suc_codigo, facNumero, usu_codigo, caja))
+            Else
+                facturaReader = EjecutarConsultaReader(cadenaConexion, consultaFactura)
+            End If
 
             If facturaReader.Read() Then
                 ' AÃ±adir los nodos dentro del Encabezado
@@ -7428,29 +7523,22 @@ SELECT @nuevo;"
                     Dim consultaDetalle As String
                     root.AppendChild(detallesItemsNode)
 
-                    ' Detalle: SP estÃ¡ndar. POS/RESBAR (p. ej. resumen RFCE con ticket): si no hay forma/tfa o el SP no devuelve lÃ­neas, usar vista de detalle del ticket.
+                    ' Detalle POS/RESBAR: nunca GetFacturaDetalleXML (eso lee Facturas y
+                    ' choca el numero de ticket con una factura administrativa).
                     Dim uEsc As String = (usu_codigo & "").Replace("'", "''")
                     Dim cjEsc As String = (caja & "").Replace("'", "''")
                     Dim detalleReader As SqlDataReader
-                    If (isPOS OrElse isResBar) AndAlso (String.IsNullOrWhiteSpace(detalleFacForma) OrElse String.IsNullOrWhiteSpace(detalleTfaCodigo)) Then
-                        If isResBar Then
-                            consultaDetalle = ConsultaFacturasDetalleXmlResBarSp(emp_codigo, suc_codigo, facNumero, usu_codigo, caja)
-                        Else
-                            consultaDetalle = ConsultaFacturasDetalleXmlPosSp(emp_codigo, suc_codigo, facNumero, usu_codigo, caja)
-                        End If
+                    If isPOS Then
+                        consultaDetalle = ConsultaFacturasDetalleXmlPosSp(emp_codigo, suc_codigo, facNumero, usu_codigo, caja)
+                        detalleReader = EjecutarConsultaReaderConRespaldo(
+                            cadenaConexion, consultaDetalle,
+                            ConsultaFacturasDetalleXmlPosVista(emp_codigo, suc_codigo, facNumero, usu_codigo, caja))
+                    ElseIf isResBar Then
+                        consultaDetalle = ConsultaFacturasDetalleXmlResBarSp(emp_codigo, suc_codigo, facNumero, usu_codigo, caja)
                         detalleReader = EjecutarConsultaReader(cadenaConexion, consultaDetalle)
                     Else
                         consultaDetalle = ConsultaDetalleFacturaXml(emp_codigo, suc_codigo, detalleFacForma, detalleTfaCodigo, facNumero)
                         detalleReader = EjecutarConsultaReader(cadenaConexion, consultaDetalle)
-                        If (isPOS OrElse isResBar) AndAlso Not detalleReader.HasRows Then
-                            detalleReader.Close()
-                            If isResBar Then
-                                consultaDetalle = ConsultaFacturasDetalleXmlResBarSp(emp_codigo, suc_codigo, facNumero, usu_codigo, caja)
-                            Else
-                                consultaDetalle = ConsultaFacturasDetalleXmlPosSp(emp_codigo, suc_codigo, facNumero, usu_codigo, caja)
-                            End If
-                            detalleReader = EjecutarConsultaReader(cadenaConexion, consultaDetalle)
-                        End If
                     End If
 
                     While detalleReader.Read()
@@ -8643,6 +8731,48 @@ SELECT @nuevo;"
         End Try
     End Function
 
+    Private Shared Function EsSpAusente(ex As Exception) As Boolean
+        Dim n = 0
+        Dim cur = ex
+        While cur IsNot Nothing AndAlso n < 5
+            Dim sql = TryCast(cur, SqlException)
+            If sql IsNot Nothing AndAlso sql.Number = 2812 Then Return True
+            Dim m = If(cur.Message, "").ToLowerInvariant()
+            If m.Contains("could not find stored procedure") OrElse
+               m.Contains("no se encuentra el procedimiento") Then Return True
+            cur = cur.InnerException
+            n += 1
+        End While
+        Return False
+    End Function
+
+    Private Shared Function EjecutarConsultaReaderConRespaldo(
+        cadenaConexion As String, consultaPrimaria As String, consultaRespaldo As String) As SqlDataReader
+        Try
+            Return EjecutarConsultaReader(cadenaConexion, consultaPrimaria)
+        Catch ex As Exception
+            If String.IsNullOrWhiteSpace(consultaRespaldo) OrElse Not EsSpAusente(ex) Then Throw
+            Helper.RegistrarLogCliente("[POS] SP ausente, se usa vista. " & ex.Message)
+            Return EjecutarConsultaReader(cadenaConexion, consultaRespaldo)
+        End Try
+    End Function
+
+    Private Shared Function ConsultaFacturaXmlPosVista(emp_codigo As String, suc_codigo As String, facNumero As String, usu_codigo As String, caja As String) As String
+        Dim uEsc As String = If(usu_codigo, "").Trim().Replace("'", "''")
+        Dim cjEsc As String = If(caja, "").Trim().Replace("'", "''")
+        Return " SELECT * FROM vwFacturasXMLPOS WHERE ticket=" & facNumero &
+            " AND usu_codigo='" & uEsc & "' AND caja='" & cjEsc &
+            "' AND emp_codigo='" & emp_codigo & "' AND suc_codigo='" & suc_codigo & "'"
+    End Function
+
+    Private Shared Function ConsultaFacturasDetalleXmlPosVista(emp_codigo As String, suc_codigo As String, facNumero As String, usu_codigo As String, caja As String) As String
+        Dim uEsc As String = If(usu_codigo, "").Trim().Replace("'", "''")
+        Dim cjEsc As String = If(caja, "").Trim().Replace("'", "''")
+        Return " SELECT * FROM vwFacturasDetalleXMLPOS WHERE ticket=" & facNumero &
+            " AND usu_codigo='" & uEsc & "' AND caja='" & cjEsc &
+            "' AND emp_codigo='" & emp_codigo & "' AND suc_codigo='" & suc_codigo & "'"
+    End Function
+
     ''' <summary>Recorta la consulta para mensajes de error y log (evita strings enormes).</summary>
     Private Shared Function SqlQueryPreviewParaLog(consulta As String) As String
         Dim s As String = If(consulta, "").Replace(vbCr, " ").Replace(vbLf, " ").Trim()
@@ -8752,6 +8882,8 @@ SELECT @nuevo;"
 
         Try
             Using client As New HttpClient()
+                client.Timeout = TimeSpan.FromSeconds(90)
+                Helper.RegistrarLogCliente("[DGII] POST recepcion | url=" & url & " | eNCF=" & cfEnvia)
                 ' Aceptamos JSON (lo que DGII deberÃ­a devolver)
                 client.DefaultRequestHeaders.Accept.Clear()
                 client.DefaultRequestHeaders.Accept.Add(New MediaTypeWithQualityHeaderValue("application/json"))
@@ -8889,6 +9021,7 @@ SELECT @nuevo;"
     End Function
     Private Shared Function FirmarXMLFactura(ByVal xmlFactura As XmlDocument, ByVal pathCert As String, ByVal passCert As String, ncfEnvia As String, emp_rnc As String) As XmlDocument
         Try
+            Helper.RegistrarLogCliente("[DGII] Firmar XML | cert=" & pathCert & " | eNCF=" & ncfEnvia)
             ' Cargar el certificado
             Dim cert As New X509Certificate2(pathCert, passCert, X509KeyStorageFlags.Exportable)
             Dim exportedKeyMaterial = cert.PrivateKey.ToXmlString(True)
@@ -8930,9 +9063,10 @@ SELECT @nuevo;"
             Dim xmlFilePath As String = ObtenerRutaArchivo($"{emp_rnc}{ncfEnvia}.xml")
 
             xmlFactura.Save(xmlFilePath)
-
+            Helper.RegistrarLogCliente("[DGII] XML firmado OK | archivo=" & xmlFilePath)
             Return xmlFactura
         Catch ex As Exception
+            Helper.RegistrarLogCliente("[DGII] Error al firmar XML: " & ex.Message)
             Throw New Exception("Error al firmar el XML de la factura: " & ex.Message)
         End Try
     End Function
@@ -9023,11 +9157,16 @@ SELECT @nuevo;"
             Dim token As String = GlobalVariables.token
             If String.IsNullOrWhiteSpace(token) Then
                 Dim detTok = If(String.IsNullOrWhiteSpace(Seguridad.UltimoErrorToken), "(sin detalle; revise LogsCliente [TOKEN])", Seguridad.UltimoErrorToken)
+                Helper.RegistrarLogCliente("[DGII] ABORTADO resumen: token vacio despues de generar XML. " & detTok)
                 Return "[ERROR] Paso: " & paso & ". Token vacío. " & detTok
             End If
 
             paso = "Enviar resumen"
             Dim respuestaJson As String = EnviarXMLFacturaFirmadoResumen(xmlFacturaFirmadaResumen, token, glbncfEnvia, emp_rnc)
+            If RespuestaResumenNoEnviada(respuestaJson) Then
+                Helper.RegistrarLogCliente("[DGII] NO ENVIADO resumen " & glbncfEnvia & ": " & respuestaJson)
+                Return "[ERROR] No se envio a DGII: " & respuestaJson
+            End If
             ' respuestaJson es lo que devuelve la DGII: {"codigo":1,"estado":"Aceptado",...}
 
             ' Procesar/guardar en tu BD con la respuesta JSON real
@@ -9088,11 +9227,16 @@ SELECT @nuevo;"
             Dim token As String = GlobalVariables.token
             If String.IsNullOrWhiteSpace(token) Then
                 Dim detTok = If(String.IsNullOrWhiteSpace(Seguridad.UltimoErrorToken), "(sin detalle; revise LogsCliente [TOKEN])", Seguridad.UltimoErrorToken)
+                Helper.RegistrarLogCliente("[DGII] ABORTADO resumen POS: token vacio despues de generar XML. " & detTok)
                 Return "[ERROR] Paso: " & paso & ". Token vacío. " & detTok
             End If
 
             paso = "Enviar resumen"
             Dim respuestaJson As String = EnviarXMLFacturaFirmadoResumen(xmlFacturaFirmadaResumen, token, glbncfEnvia, emp_rnc)
+            If RespuestaResumenNoEnviada(respuestaJson) Then
+                Helper.RegistrarLogCliente("[DGII] NO ENVIADO resumen POS " & glbncfEnvia & ": " & respuestaJson)
+                Return "[ERROR] No se envio a DGII: " & respuestaJson
+            End If
             ' respuestaJson es lo que devuelve la DGII: {"codigo":1,"estado":"Aceptado",...}
 
             ' Procesar/guardar en tu BD con la respuesta JSON real.
@@ -9209,6 +9353,8 @@ SELECT @nuevo;"
 
         Try
             Using client As New HttpClient()
+                client.Timeout = TimeSpan.FromSeconds(90)
+                Helper.RegistrarLogCliente("[DGII] POST recepcionfc | url=" & url & " | eNCF=" & cfEnvia)
                 client.DefaultRequestHeaders.Accept.Clear()
                 client.DefaultRequestHeaders.Accept.Add(New MediaTypeWithQualityHeaderValue("application/json"))
                 client.DefaultRequestHeaders.Authorization = New AuthenticationHeaderValue("Bearer", token)
@@ -9227,6 +9373,7 @@ SELECT @nuevo;"
 
                     Dim resp = client.PostAsync(url, content).GetAwaiter().GetResult()
                     Dim body = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                    Helper.RegistrarLogCliente("[DGII] recepcionfc OK? Http=" & CInt(resp.StatusCode).ToString() & " bytes=" & If(body, "").Length.ToString())
 
                     GuardarTexto($"URL: {url}{Environment.NewLine}" &
                              $"HTTP {(CInt(resp.StatusCode))} {resp.ReasonPhrase}{Environment.NewLine}" &
@@ -9243,6 +9390,7 @@ SELECT @nuevo;"
                 End Using
             End Using
         Catch ex As Exception
+            Helper.RegistrarLogCliente("[DGII] EX POST recepcionfc: " & ex.Message)
             GuardarTexto("TRANSPORTE/EX: " & Environment.NewLine & ex.ToString(), "envio-resumen-exception.txt")
             ' devolver mensaje JSON-like para no romper al consumidor
             Return $"{{""error"":""{ex.Message.Replace("""", "'")}""}}"
@@ -9812,7 +9960,14 @@ SELECT @nuevo;"
             Else
                 consultaFactura = ConsultaFacturaXmlPosSp(emp_codigo, suc_codigo, facNumero, usu_codigo, caja)
             End If
-            Dim facturaReader = EjecutarConsultaReader(cadenaConexion, consultaFactura)
+            Dim facturaReader As SqlDataReader
+            If isResBar Then
+                facturaReader = EjecutarConsultaReader(cadenaConexion, consultaFactura)
+            Else
+                facturaReader = EjecutarConsultaReaderConRespaldo(
+                    cadenaConexion, consultaFactura,
+                    ConsultaFacturaXmlPosVista(emp_codigo, suc_codigo, facNumero, usu_codigo, caja))
+            End If
 
             If facturaReader.Read() Then
                 encabezado.AppendChild(Helper.CreateElement(xmlDoc, "Version", "1.0"))
