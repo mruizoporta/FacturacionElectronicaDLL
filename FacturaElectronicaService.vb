@@ -8880,80 +8880,93 @@ SELECT @nuevo;"
         ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 Or SecurityProtocolType.Tls11 Or SecurityProtocolType.Tls
         ServicePointManager.Expect100Continue = False
 
+        Dim tokenUso As String = token
         Try
-            Using client As New HttpClient()
-                client.Timeout = TimeSpan.FromSeconds(90)
-                Helper.RegistrarLogCliente("[DGII] POST recepcion | url=" & url & " | eNCF=" & cfEnvia)
-                ' Aceptamos JSON (lo que DGII deberÃ­a devolver)
-                client.DefaultRequestHeaders.Accept.Clear()
-                client.DefaultRequestHeaders.Accept.Add(New MediaTypeWithQualityHeaderValue("application/json"))
-                client.DefaultRequestHeaders.Authorization = New AuthenticationHeaderValue("Bearer", token)
-
-                ' XML a bytes (memoria)
-                Dim bytes As Byte()
-                Using ms As New MemoryStream()
-                    signedXml.Save(ms)
-                    bytes = ms.ToArray()
-                End Using
-
-                Dim part As New ByteArrayContent(bytes)
-                part.Headers.ContentType = New MediaTypeHeaderValue("application/xml")
-                Dim fileName As String = emp_rnc & cfEnvia & ".xml"
-
-                Using form As New MultipartFormDataContent()
-                    form.Add(part, "xml", fileName)
-
-                    Dim resp = client.PostAsync(url, form).GetAwaiter().GetResult()
-                    Dim body = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-
-                    ' Log completo
-                    GuardarLogEnvioFactura(url, "HTTP " & CInt(resp.StatusCode) & " " & resp.ReasonPhrase & " | " & body)
-
-                    ' 1) Si no es success, devolvemos error con detalle
-                    If Not resp.IsSuccessStatusCode Then
-                        ' DetecciÃ³n rÃ¡pida de error HTML tipo "MY NS HOME PAGE"
-                        Dim bodyTrim = body.Trim().ToLowerInvariant()
-
-                        If bodyTrim.StartsWith("<html") OrElse
-                       bodyTrim.Contains("404 not found") OrElse
-                       bodyTrim.Contains("my ns home page") Then
-
-                            Return "ERROR: La URL de recepciÃ³n no responde como servicio ECF. " &
-                               "Probable URL incorrecta o cambiada: " & url & " | BODY: " & body
-                        End If
-
-                        Return "ERROR: HTTP " & CInt(resp.StatusCode) & " " & resp.ReasonPhrase & " | " & body
-                    End If
-
-                    ' 2) Intentar parsear JSON (respuesta correcta de DGII)
-                    Try
-                        Dim jo = JObject.Parse(body)
-                        Dim trackId = CStr(jo.SelectToken("trackId"))
-
-                        If String.IsNullOrWhiteSpace(trackId) Then
-                            Return "ERROR: respuesta sin trackId. Body: " & body
-                        End If
-
-                        Return trackId
-                    Catch
-                        ' 3) No fue JSON, revisar si quizÃ¡s es HTML
-                        Dim bodyTrim = body.Trim().ToLowerInvariant()
-
-                        If bodyTrim.StartsWith("<html") OrElse
-                       bodyTrim.Contains("404 not found") OrElse
-                       bodyTrim.Contains("my ns home page") Then
-
-                            Return "ERROR: La URL de recepciÃ³n parece apuntar a una pÃ¡gina HTML (no al servicio web ECF). " &
-                               "Revise la URL base: " & GlobalVariables.url_base & " | BODY: " & body
-                        End If
-
-                        Return "ERROR: respuesta no JSON. Body: " & body
-                    End Try
-                End Using
+            Dim bytes As Byte()
+            Using ms As New MemoryStream()
+                signedXml.Save(ms)
+                bytes = ms.ToArray()
             End Using
+
+            For intento As Integer = 1 To 2
+                Using client As New HttpClient()
+                    client.Timeout = TimeSpan.FromSeconds(90)
+                    Helper.RegistrarLogCliente("[DGII] POST recepcion | url=" & url & " | eNCF=" & cfEnvia)
+                    client.DefaultRequestHeaders.Accept.Clear()
+                    client.DefaultRequestHeaders.Accept.Add(New MediaTypeWithQualityHeaderValue("application/json"))
+                    client.DefaultRequestHeaders.Authorization = New AuthenticationHeaderValue("Bearer", tokenUso)
+
+                    Dim part As New ByteArrayContent(bytes)
+                    part.Headers.ContentType = New MediaTypeHeaderValue("application/xml")
+                    Dim fileName As String = emp_rnc & cfEnvia & ".xml"
+
+                    Using form As New MultipartFormDataContent()
+                        form.Add(part, "xml", fileName)
+
+                        Dim resp = client.PostAsync(url, form).GetAwaiter().GetResult()
+                        Dim body = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+
+                        GuardarLogEnvioFactura(url, "HTTP " & CInt(resp.StatusCode) & " " & resp.ReasonPhrase & " | " & body)
+
+                        If resp.StatusCode = Net.HttpStatusCode.Unauthorized AndAlso intento = 1 Then
+                            Helper.RegistrarLogCliente("[TOKEN] HTTP 401 en recepcion: pidiendo token nuevo")
+                            tokenUso = TokenNuevoTras401()
+                            If tokenUso <> "" Then Continue For
+                        End If
+
+                        If Not resp.IsSuccessStatusCode Then
+                            Dim bodyTrim = If(body, "").Trim().ToLowerInvariant()
+
+                            If bodyTrim.StartsWith("<html") OrElse
+                           bodyTrim.Contains("404 not found") OrElse
+                           bodyTrim.Contains("my ns home page") Then
+
+                                Return "ERROR: La URL de recepciÃ³n no responde como servicio ECF. " &
+                                   "Probable URL incorrecta o cambiada: " & url & " | BODY: " & body
+                            End If
+
+                            Return "ERROR: HTTP " & CInt(resp.StatusCode) & " " & resp.ReasonPhrase & " | " & body
+                        End If
+
+                        Try
+                            Dim jo = JObject.Parse(body)
+                            Dim trackId = CStr(jo.SelectToken("trackId"))
+
+                            If String.IsNullOrWhiteSpace(trackId) Then
+                                Return "ERROR: respuesta sin trackId. Body: " & body
+                            End If
+
+                            Return trackId
+                        Catch
+                            Dim bodyTrim = If(body, "").Trim().ToLowerInvariant()
+
+                            If bodyTrim.StartsWith("<html") OrElse
+                           bodyTrim.Contains("404 not found") OrElse
+                           bodyTrim.Contains("my ns home page") Then
+
+                                Return "ERROR: La URL de recepciÃ³n parece apuntar a una pÃ¡gina HTML (no al servicio web ECF). " &
+                                   "Revise la URL base: " & GlobalVariables.url_base & " | BODY: " & body
+                            End If
+
+                            Return "ERROR: respuesta no JSON. Body: " & body
+                        End Try
+                    End Using
+                End Using
+            Next
+            Return "ERROR: HTTP 401 Unauthorized | "
         Catch ex As Exception
             Return "ERROR: " & ex.Message
         End Try
+    End Function
+
+    Private Shared Function TokenNuevoTras401() As String
+        Seguridad.InvalidarToken()
+        Seguridad.ObtenerToken()
+        Dim t = If(GlobalVariables.token, "").Trim()
+        If t = "" Then
+            Helper.RegistrarLogCliente("[TOKEN] No se pudo renovar tras 401. " & If(Seguridad.UltimoErrorToken, ""))
+        End If
+        Return t
     End Function
 
 
@@ -9351,48 +9364,55 @@ SELECT @nuevo;"
         ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 Or SecurityProtocolType.Tls11 Or SecurityProtocolType.Tls
         ServicePointManager.Expect100Continue = False
 
+        Dim tokenUso As String = token
         Try
-            Using client As New HttpClient()
-                client.Timeout = TimeSpan.FromSeconds(90)
-                Helper.RegistrarLogCliente("[DGII] POST recepcionfc | url=" & url & " | eNCF=" & cfEnvia)
-                client.DefaultRequestHeaders.Accept.Clear()
-                client.DefaultRequestHeaders.Accept.Add(New MediaTypeWithQualityHeaderValue("application/json"))
-                client.DefaultRequestHeaders.Authorization = New AuthenticationHeaderValue("Bearer", token)
-
-                Dim xmlBytes As Byte()
-                Using ms As New MemoryStream()
-                    signedXml.Save(ms)
-                    xmlBytes = ms.ToArray()
-                End Using
-
-                Using content As New MultipartFormDataContent()
-                    Dim fileContent As New ByteArrayContent(xmlBytes)
-                    fileContent.Headers.ContentType = New MediaTypeHeaderValue("application/xml")
-                    Dim fileName As String = emp_rnc & cfEnvia & ".xml"
-                    content.Add(fileContent, "xml", fileName)
-
-                    Dim resp = client.PostAsync(url, content).GetAwaiter().GetResult()
-                    Dim body = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-                    Helper.RegistrarLogCliente("[DGII] recepcionfc OK? Http=" & CInt(resp.StatusCode).ToString() & " bytes=" & If(body, "").Length.ToString())
-
-                    GuardarTexto($"URL: {url}{Environment.NewLine}" &
-                             $"HTTP {(CInt(resp.StatusCode))} {resp.ReasonPhrase}{Environment.NewLine}" &
-                             "Body:" & Environment.NewLine & body,
-                             "envio-resumen-http.txt")
-
-                    ' SIEMPRE devolver el body (JSON de la DGII), incluso si hay error HTTP
-                    If Not resp.IsSuccessStatusCode Then
-                        ' opcional: incluir cÃ³digo HTTP en el JSON para depurar
-                        Return $"{{""httpStatus"":{CInt(resp.StatusCode)},""body"":{body}}}"
-                    End If
-
-                    Return body
-                End Using
+            Dim xmlBytes As Byte()
+            Using ms As New MemoryStream()
+                signedXml.Save(ms)
+                xmlBytes = ms.ToArray()
             End Using
+
+            For intento As Integer = 1 To 2
+                Using client As New HttpClient()
+                    client.Timeout = TimeSpan.FromSeconds(90)
+                    Helper.RegistrarLogCliente("[DGII] POST recepcionfc | url=" & url & " | eNCF=" & cfEnvia)
+                    client.DefaultRequestHeaders.Accept.Clear()
+                    client.DefaultRequestHeaders.Accept.Add(New MediaTypeWithQualityHeaderValue("application/json"))
+                    client.DefaultRequestHeaders.Authorization = New AuthenticationHeaderValue("Bearer", tokenUso)
+
+                    Using content As New MultipartFormDataContent()
+                        Dim fileContent As New ByteArrayContent(xmlBytes)
+                        fileContent.Headers.ContentType = New MediaTypeHeaderValue("application/xml")
+                        Dim fileName As String = emp_rnc & cfEnvia & ".xml"
+                        content.Add(fileContent, "xml", fileName)
+
+                        Dim resp = client.PostAsync(url, content).GetAwaiter().GetResult()
+                        Dim body = resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                        Helper.RegistrarLogCliente("[DGII] recepcionfc OK? Http=" & CInt(resp.StatusCode).ToString() & " bytes=" & If(body, "").Length.ToString())
+
+                        GuardarTexto($"URL: {url}{Environment.NewLine}" &
+                                 $"HTTP {(CInt(resp.StatusCode))} {resp.ReasonPhrase}{Environment.NewLine}" &
+                                 "Body:" & Environment.NewLine & body,
+                                 "envio-resumen-http.txt")
+
+                        If resp.StatusCode = Net.HttpStatusCode.Unauthorized AndAlso intento = 1 Then
+                            Helper.RegistrarLogCliente("[TOKEN] HTTP 401 en recepcionfc: pidiendo token nuevo")
+                            tokenUso = TokenNuevoTras401()
+                            If tokenUso <> "" Then Continue For
+                        End If
+
+                        If Not resp.IsSuccessStatusCode Then
+                            Return $"{{""httpStatus"":{CInt(resp.StatusCode)},""body"":{body}}}"
+                        End If
+
+                        Return body
+                    End Using
+                End Using
+            Next
+            Return "{""httpStatus"":401,""body"":}"
         Catch ex As Exception
             Helper.RegistrarLogCliente("[DGII] EX POST recepcionfc: " & ex.Message)
             GuardarTexto("TRANSPORTE/EX: " & Environment.NewLine & ex.ToString(), "envio-resumen-exception.txt")
-            ' devolver mensaje JSON-like para no romper al consumidor
             Return $"{{""error"":""{ex.Message.Replace("""", "'")}""}}"
         End Try
     End Function

@@ -33,6 +33,7 @@ Public Class Seguridad
 
     Private Shared Function CalcularExpiracionUtc(token As String, jsonResp As JObject) As DateTime
         Dim fallback = DateTime.UtcNow.AddMinutes(MinutosFallbackToken)
+        Dim expira As DateTime = DateTime.MinValue
 
         If jsonResp IsNot Nothing Then
             For Each nombre In New String() {"expira", "expiracion", "expires", "expire"}
@@ -44,31 +45,43 @@ Public Class Seguridad
                     If d.Kind = DateTimeKind.Unspecified Then
                         d = DateTime.SpecifyKind(d, DateTimeKind.Local)
                     End If
-                    Return d.ToUniversalTime()
+                    expira = d.ToUniversalTime()
+                    Exit For
                 End If
             Next
         End If
 
-        Try
-            Dim parts = If(token, "").Split("."c)
-            If parts.Length >= 2 Then
-                Dim payload = parts(1).Replace("-"c, "+"c).Replace("_"c, "/"c)
-                Select Case payload.Length Mod 4
-                    Case 2 : payload &= "=="
-                    Case 3 : payload &= "="
-                End Select
-                Dim json = Encoding.UTF8.GetString(Convert.FromBase64String(payload))
-                Dim jo = JObject.Parse(json)
-                Dim exp = jo("exp")
-                Dim unix As Long
-                If exp IsNot Nothing AndAlso Long.TryParse(exp.ToString(), unix) Then
-                    Return New DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(unix)
+        If expira = DateTime.MinValue Then
+            Try
+                Dim parts = If(token, "").Split("."c)
+                If parts.Length >= 2 Then
+                    Dim payload = parts(1).Replace("-"c, "+"c).Replace("_"c, "/"c)
+                    Select Case payload.Length Mod 4
+                        Case 2 : payload &= "=="
+                        Case 3 : payload &= "="
+                    End Select
+                    Dim json = Encoding.UTF8.GetString(Convert.FromBase64String(payload))
+                    Dim jo = JObject.Parse(json)
+                    Dim exp = jo("exp")
+                    Dim unix As Long
+                    If exp IsNot Nothing AndAlso Long.TryParse(exp.ToString(), unix) Then
+                        expira = New DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(unix)
+                    End If
                 End If
-            End If
-        Catch
-        End Try
+            Catch
+            End Try
+        End If
 
-        Return fallback
+        If expira = DateTime.MinValue Then expira = fallback
+
+        ' El JWT a veces dice 5 h; la API de recepcion corta antes (~1 h) y devuelve 401.
+        If expira > fallback Then
+            Helper.RegistrarLogCliente(
+                "[TOKEN] JWT/expira=" & expira.ToLocalTime().ToString("HH:mm:ss") &
+                ", tope=" & MinutosFallbackToken.ToString() & " min")
+            Return fallback
+        End If
+        Return expira
     End Function
 
     Private Shared Sub RegistrarErrorToken(mensaje As String)
