@@ -318,7 +318,8 @@ Public Class FacturaElectronicaService
     ''' <summary>
     ''' Proceso independiente: reconsulta en DGII los envíos de las últimas horas que
     ''' DASHA no tiene como Aceptado (timeout, 401, "en proceso"). Si la DGII ya los
-    ''' aceptó, actualiza la BD y NO genera otra secuencia.
+    ''' aceptó, actualiza la BD y NO genera otra secuencia. También envía devoluciones
+    ''' E34 y compras I/E que se grabaron y no salieron (sin trackId).
     ''' Llamar desde un botón/timer de Admin o POS: ReforzarPendientesDGII(emp, 24).
     ''' </summary>
     <ComVisible(True)>
@@ -330,10 +331,10 @@ Public Class FacturaElectronicaService
             If errTok IsNot Nothing Then Return errTok
 
             Dim empInt As Integer
-            If Not Integer.TryParse(emp, empInt) Then
-                Return Helper.ConstruirJsonRespuestaOperacion(
-                    New Helper.DgiiEstadoRespuesta With {.Estado = "Error", .Mensaje = "emp inválido.", .Aceptado = False})
+            If String.IsNullOrWhiteSpace(emp) OrElse emp.Trim() = "0" Then
+                emp = ResolverEmpCodigoConsulta("", "")
             End If
+            If Not Integer.TryParse(emp, empInt) OrElse empInt <= 0 Then empInt = 1
             If horas <= 0 Then horas = 24
             If horas > 168 Then horas = 168
 
@@ -377,10 +378,61 @@ Public Class FacturaElectronicaService
                 End Try
             Next
 
+            Dim nEnviados As Integer = 0
+            Dim nEnvioError As Integer = 0
+            For Each d In Helper.ListarDevolucionesPendientesEnvio(cadenaConexion, empInt, horas)
+                If d.DevNumero <= 0 Then Continue For
+                Try
+                    Dim r As String
+                    If d.TicketNumero > 0 Then
+                        r = EnviarDevolucionPOS(
+                            empInt.ToString(), d.SucCodigo.ToString(), "",
+                            d.DevNumero.ToString(), If(d.EmpRnc, ""), "", If(d.CliRnc, ""),
+                            "", "", "34")
+                    Else
+                        r = EnviarDevolucion(
+                            empInt.ToString(), d.SucCodigo.ToString(), "",
+                            d.DevNumero.ToString(), If(d.EmpRnc, ""), "", If(d.CliRnc, ""),
+                            "", "", "34")
+                    End If
+                    Helper.RegistrarLogCliente("[REFUERZO] Enviar devolucion " & d.DevNumero.ToString() & " -> " & If(r, ""))
+                    If ResultadoRefuerzoEnvioOk(r) Then
+                        nEnviados += 1
+                    Else
+                        nEnvioError += 1
+                    End If
+                Catch exDev As Exception
+                    nEnvioError += 1
+                    Helper.RegistrarLogCliente("[REFUERZO] EX enviar devolucion " & d.DevNumero.ToString() & ": " & exDev.Message)
+                End Try
+            Next
+
+            For Each c In Helper.ListarComprasPendientesEnvio(cadenaConexion, empInt, horas)
+                If String.IsNullOrWhiteSpace(c.FacNumero) Then Continue For
+                Try
+                    Dim tipoCompra = If(String.Equals(If(c.SupTipo, "").Trim(), "E", StringComparison.OrdinalIgnoreCase), "47", "41")
+                    Dim r = EnviarCompras(
+                        empInt.ToString(), c.SucCodigo.ToString(), c.SupCodigo.ToString(),
+                        c.FacNumero, If(c.EmpRnc, ""), "", If(c.SupRnc, ""),
+                        "", "", tipoCompra)
+                    Helper.RegistrarLogCliente("[REFUERZO] Enviar compra " & c.FacNumero & " -> " & If(r, ""))
+                    If ResultadoRefuerzoEnvioOk(r) Then
+                        nEnviados += 1
+                    Else
+                        nEnvioError += 1
+                    End If
+                Catch exComp As Exception
+                    nEnvioError += 1
+                    Helper.RegistrarLogCliente("[REFUERZO] EX enviar compra " & c.FacNumero & ": " & exComp.Message)
+                End Try
+            Next
+
             Dim msg = "Refuerzo DGII: consultados=" & nConsultados.ToString() &
                       " aceptados=" & nAceptados.ToString() &
                       " pendientes=" & nPendientes.ToString() &
                       " rechazados=" & nRechazados.ToString() &
+                      " enviados=" & nEnviados.ToString() &
+                      " envio_error=" & nEnvioError.ToString() &
                       " errores=" & nErrores.ToString()
             Helper.RegistrarLogCliente("[REFUERZO] " & msg)
             Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
@@ -395,6 +447,15 @@ Public Class FacturaElectronicaService
                 New Helper.DgiiEstadoRespuesta With {.Estado = "Error", .Mensaje = ex.Message, .Aceptado = False},
                 ex.ToString())
         End Try
+    End Function
+
+    Private Shared Function ResultadoRefuerzoEnvioOk(r As String) As Boolean
+        If String.IsNullOrWhiteSpace(r) Then Return False
+        Dim t = r.Trim()
+        If t.StartsWith("Error", StringComparison.OrdinalIgnoreCase) Then Return False
+        If t.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase) Then Return False
+        If t.IndexOf("""Estado"":""Error""", StringComparison.OrdinalIgnoreCase) >= 0 Then Return False
+        Return True
     End Function
 
     Private Shared Function ConsultarDgiiAntesDeReenviar(
@@ -452,6 +513,12 @@ Public Class FacturaElectronicaService
         End If
         If tipo = "RESTBAR" Then
             Return Helper.EncfDocumentoRef.ResBar(emp, 1, usu, caja, fac)
+        End If
+        If tipo = "DEVOLUCION" Then
+            Return Helper.EncfDocumentoRef.Devolucion(emp, 1, fac)
+        End If
+        If tipo = "NOTA_CREDITO" Then
+            Return Helper.EncfDocumentoRef.NotaCredito(emp, 1, fac)
         End If
         Return Helper.EncfDocumentoRef.Factura(emp, 1, "A", 1, fac)
     End Function
@@ -2456,6 +2523,8 @@ Public Class FacturaElectronicaService
                                              Optional tfaCodigo As String = "",
                                              Optional tipoECF As String = "") As String
         Try
+            isPOS = False
+            isResBar = False
             CargarConfiguracion()
             Seguridad.ObtenerToken()
             Dim errTokDev = ErrorSiTokenVacioTexto()
@@ -2466,7 +2535,7 @@ Public Class FacturaElectronicaService
                 Dim jsonYaDev = IntentarReusarEnvioExistenteDgii(
                     Helper.EncfDocumentoRef.Devolucion(empDev, sucDev, numDev),
                     If(String.IsNullOrWhiteSpace(tipoECF), "34", tipoECF))
-                If Not String.IsNullOrWhiteSpace(jsonYaDev) Then Return MsgYaEnviadoNoReenviar
+                If Not String.IsNullOrWhiteSpace(jsonYaDev) Then Return jsonYaDev
             End If
 
             Dim nuevoENCF As String = LlamarAsignarSecuenciaDevolucionDGII(cadenaConexion,
@@ -2478,10 +2547,11 @@ Public Class FacturaElectronicaService
 
             Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, "34", emp, suc, "", facNumero, empRnc, "", "", False)
             Return r
-            'Return nuevoENCF
-            'Return $"OK: Factura {facNumero} tipo {tipoECF} lista para envÃ­o desde empresa {emp}, sucursal {suc}."
         Catch ex As Exception
             Return $"Error: {facNumero} tipo {tipoECF}  empresa {emp}, sucursal {suc} {ex.Message}"
+        Finally
+            isPOS = False
+            isResBar = False
         End Try
 
     End Function
@@ -2559,10 +2629,11 @@ Public Class FacturaElectronicaService
             Helper.RegistrarLogCliente("nuevoENCF " + nuevoENCF)
 
             Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, "34", emp, suc, "", facNumero, empRnc, "", "", False)
-            'Return nuevoENCF
-            Return $"OK: Factura {facNumero} tipo {tipoECF} lista para envÃ­o desde empresa {emp}, sucursal {suc}."
+            Return r
         Catch ex As Exception
             Return $"Error: {facNumero} tipo {tipoECF}  empresa {emp}, sucursal {suc} {ex.Message}"
+        Finally
+            isPOS = False
         End Try
 
     End Function
@@ -2600,11 +2671,12 @@ Public Class FacturaElectronicaService
             Helper.RegistrarLogCliente("nuevoENCF " + nuevoENCF)
 
             Dim r As String = ProcesoEnvioFacturaE34(RncCliente, nuevoENCF, "34", emp, suc, "", facNumero, empRnc, "", "", False)
-            Return $"OK: Factura {facNumero} tipo {tipoECF} lista para envÃ­o desde empresa {emp}, sucursal {suc}."
+            Return r
         Catch ex As Exception
             Return $"Error: {facNumero} tipo {tipoECF}  empresa {emp}, sucursal {suc} {ex.Message}"
         Finally
             isResBar = False
+            isPOS = False
         End Try
 
     End Function
