@@ -742,6 +742,157 @@ ORDER BY b.Fecha_Envio DESC;"
         Public Property MensajeError As String
     End Class
 
+    Public Class PendienteRefuerzoDgii
+        Public Property FacNumero As String
+        Public Property Tipo As String
+        Public Property UsuCodigo As String
+        Public Property Caja As String
+        Public Property TrackId As String
+        Public Property Estado As String
+    End Class
+
+    Public Class DevolucionPendienteEnvio
+        Public Property SucCodigo As Integer
+        Public Property DevNumero As Integer
+        Public Property TicketNumero As Integer
+        Public Property EmpRnc As String
+        Public Property CliRnc As String
+    End Class
+
+    Public Class CompraPendienteEnvio
+        Public Property SucCodigo As Integer
+        Public Property FacNumero As String
+        Public Property SupCodigo As Integer
+        Public Property EmpRnc As String
+        Public Property SupRnc As String
+        Public Property SupTipo As String
+    End Class
+
+    Public Shared Function ListarPendientesRefuerzoDgii(cadenaConexion As String, emp As Integer, horas As Integer) As List(Of PendienteRefuerzoDgii)
+        Dim lista As New List(Of PendienteRefuerzoDgii)()
+        If String.IsNullOrWhiteSpace(cadenaConexion) OrElse emp <= 0 Then Return lista
+        If horas <= 0 Then horas = 24
+        Const sql As String =
+"SELECT TOP 40 b.fac_numero, b.tipo, b.usu_codigo, b.caja, b.trackingID, b.Estado
+FROM dbo.BitacoraFacturacionElectronicaDGII b
+WHERE b.emp_codigo = @emp
+  AND b.Fecha_Envio >= DATEADD(hour, -@horas, GETDATE())
+  AND ISNULL(b.Estado,'') NOT IN ('Aceptado','Aceptado Condicional')
+  AND NULLIF(LTRIM(RTRIM(ISNULL(b.trackingID,''))),'') IS NOT NULL
+ORDER BY b.Fecha_Envio DESC;"
+        Try
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
+                Using cmd As New SqlCommand(sql, conn)
+                    cmd.CommandTimeout = 60
+                    cmd.Parameters.Add("@emp", SqlDbType.Int).Value = emp
+                    cmd.Parameters.Add("@horas", SqlDbType.Int).Value = horas
+                    conn.Open()
+                    Using r = cmd.ExecuteReader()
+                        While r.Read()
+                            lista.Add(New PendienteRefuerzoDgii With {
+                                .FacNumero = If(r.IsDBNull(0), Nothing, Convert.ToString(r.GetValue(0))),
+                                .Tipo = If(r.IsDBNull(1), Nothing, Convert.ToString(r.GetValue(1))),
+                                .UsuCodigo = If(r.IsDBNull(2), Nothing, Convert.ToString(r.GetValue(2))),
+                                .Caja = If(r.IsDBNull(3), Nothing, Convert.ToString(r.GetValue(3))),
+                                .TrackId = If(r.IsDBNull(4), Nothing, Convert.ToString(r.GetValue(4))),
+                                .Estado = If(r.IsDBNull(5), Nothing, Convert.ToString(r.GetValue(5)))
+                            })
+                        End While
+                    End Using
+                End Using
+            End Using
+        Catch ex As Exception
+            RegistrarLogCliente("ListarPendientesRefuerzoDgii: " & ex.Message)
+        End Try
+        Return lista
+    End Function
+
+    Public Shared Function ListarDevolucionesPendientesEnvio(cadenaConexion As String, emp As Integer, horas As Integer) As List(Of DevolucionPendienteEnvio)
+        Dim lista As New List(Of DevolucionPendienteEnvio)()
+        If String.IsNullOrWhiteSpace(cadenaConexion) OrElse emp <= 0 Then Return lista
+        If horas <= 0 Then horas = 24
+        Const sql As String =
+"SELECT TOP 15 d.suc_codigo, d.DEV_NUMERO, ISNULL(d.ticket_numero,0),
+        ISNULL(e.emp_rnc,''), ISNULL(c.cli_rnc,'')
+FROM dbo.DEVOLUCION d
+LEFT JOIN dbo.Empresas e ON e.emp_codigo = d.emp_codigo
+LEFT JOIN dbo.Clientes c ON c.emp_codigo = d.emp_codigo AND c.cli_codigo = d.CLI_CODIGO
+WHERE d.emp_codigo = @emp
+  AND d.DEV_FECHA >= DATEADD(hour, -@horas, GETDATE())
+  AND ISNULL(d.dev_status,'') <> 'ANU'
+  AND LEFT(LTRIM(RTRIM(ISNULL(d.eNCF,''))), 3) = 'E34'
+  AND ISNULL(d.AceptadoDGII, 0) = 0
+  AND ISNULL(d.Enviado_DGII, 0) = 0
+ORDER BY d.DEV_NUMERO DESC;"
+        Try
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
+                Using cmd As New SqlCommand(sql, conn)
+                    cmd.CommandTimeout = 60
+                    cmd.Parameters.Add("@emp", SqlDbType.Int).Value = emp
+                    cmd.Parameters.Add("@horas", SqlDbType.Int).Value = horas
+                    conn.Open()
+                    Using r = cmd.ExecuteReader()
+                        While r.Read()
+                            lista.Add(New DevolucionPendienteEnvio With {
+                                .SucCodigo = If(r.IsDBNull(0), 1, Convert.ToInt32(r.GetValue(0))),
+                                .DevNumero = If(r.IsDBNull(1), 0, Convert.ToInt32(r.GetValue(1))),
+                                .TicketNumero = If(r.IsDBNull(2), 0, Convert.ToInt32(r.GetValue(2))),
+                                .EmpRnc = If(r.IsDBNull(3), "", Convert.ToString(r.GetValue(3))),
+                                .CliRnc = If(r.IsDBNull(4), "", Convert.ToString(r.GetValue(4)))
+                            })
+                        End While
+                    End Using
+                End Using
+            End Using
+        Catch ex As Exception
+            RegistrarLogCliente("ListarDevolucionesPendientesEnvio: " & ex.Message)
+        End Try
+        Return lista
+    End Function
+
+    Public Shared Function ListarComprasPendientesEnvio(cadenaConexion As String, emp As Integer, horas As Integer) As List(Of CompraPendienteEnvio)
+        Dim lista As New List(Of CompraPendienteEnvio)()
+        If String.IsNullOrWhiteSpace(cadenaConexion) OrElse emp <= 0 Then Return lista
+        If horas <= 0 Then horas = 24
+        Const sql As String =
+"SELECT TOP 10 f.suc_codigo, CONVERT(varchar(30), f.FAC_NUMERO), f.SUP_CODIGO,
+        ISNULL(e.emp_rnc,''), ISNULL(p.sup_rnc,''), ISNULL(p.sup_tipo,'')
+FROM dbo.ProvFacturas f
+INNER JOIN dbo.Proveedores p ON p.emp_codigo = f.emp_codigo AND p.sup_codigo = f.SUP_CODIGO
+LEFT JOIN dbo.Empresas e ON e.emp_codigo = f.emp_codigo
+WHERE f.emp_codigo = @emp
+  AND f.FAC_FECHA >= DATEADD(hour, -@horas, GETDATE())
+  AND ISNULL(f.fac_status,'') <> 'ANU'
+  AND UPPER(LTRIM(RTRIM(ISNULL(p.sup_tipo,'')))) IN ('I','E')
+  AND ISNULL(f.AceptadoDGII, 0) = 0
+ORDER BY f.FAC_FECHA DESC;"
+        Try
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
+                Using cmd As New SqlCommand(sql, conn)
+                    cmd.CommandTimeout = 60
+                    cmd.Parameters.Add("@emp", SqlDbType.Int).Value = emp
+                    cmd.Parameters.Add("@horas", SqlDbType.Int).Value = horas
+                    conn.Open()
+                    Using r = cmd.ExecuteReader()
+                        While r.Read()
+                            lista.Add(New CompraPendienteEnvio With {
+                                .SucCodigo = If(r.IsDBNull(0), 1, Convert.ToInt32(r.GetValue(0))),
+                                .FacNumero = If(r.IsDBNull(1), "", Convert.ToString(r.GetValue(1))),
+                                .SupCodigo = If(r.IsDBNull(2), 0, Convert.ToInt32(r.GetValue(2))),
+                                .EmpRnc = If(r.IsDBNull(3), "", Convert.ToString(r.GetValue(3))),
+                                .SupRnc = If(r.IsDBNull(4), "", Convert.ToString(r.GetValue(4))),
+                                .SupTipo = If(r.IsDBNull(5), "", Convert.ToString(r.GetValue(5)))
+                            })
+                        End While
+                    End Using
+                End Using
+            End Using
+        Catch ex As Exception
+            RegistrarLogCliente("ListarComprasPendientesEnvio: " & ex.Message)
+        End Try
+        Return lista
+    End Function
+
     Public Shared Function ObtenerUltimaBitacoraDgii(cadenaConexion As String, doc As EncfDocumentoRef) As BitacoraDgiiUltimo
         If doc Is Nothing OrElse String.IsNullOrWhiteSpace(cadenaConexion) Then Return Nothing
         Dim sql As String
