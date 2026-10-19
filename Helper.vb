@@ -742,6 +742,54 @@ ORDER BY b.Fecha_Envio DESC;"
         Public Property MensajeError As String
     End Class
 
+    Public Class PendienteRefuerzoDgii
+        Public Property FacNumero As String
+        Public Property Tipo As String
+        Public Property UsuCodigo As String
+        Public Property Caja As String
+        Public Property TrackId As String
+        Public Property Estado As String
+    End Class
+
+    Public Shared Function ListarPendientesRefuerzoDgii(cadenaConexion As String, emp As Integer, horas As Integer) As List(Of PendienteRefuerzoDgii)
+        Dim lista As New List(Of PendienteRefuerzoDgii)()
+        If String.IsNullOrWhiteSpace(cadenaConexion) OrElse emp <= 0 Then Return lista
+        If horas <= 0 Then horas = 24
+        Const sql As String =
+"SELECT TOP 40 b.fac_numero, b.tipo, b.usu_codigo, b.caja, b.trackingID, b.Estado
+FROM dbo.BitacoraFacturacionElectronicaDGII b
+WHERE b.emp_codigo = @emp
+  AND b.Fecha_Envio >= DATEADD(hour, -@horas, GETDATE())
+  AND ISNULL(b.Estado,'') NOT IN ('Aceptado','Aceptado Condicional')
+  AND NULLIF(LTRIM(RTRIM(ISNULL(b.trackingID,''))),'') IS NOT NULL
+ORDER BY b.Fecha_Envio DESC;"
+        Try
+            Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
+                Using cmd As New SqlCommand(sql, conn)
+                    cmd.CommandTimeout = 60
+                    cmd.Parameters.Add("@emp", SqlDbType.Int).Value = emp
+                    cmd.Parameters.Add("@horas", SqlDbType.Int).Value = horas
+                    conn.Open()
+                    Using r = cmd.ExecuteReader()
+                        While r.Read()
+                            lista.Add(New PendienteRefuerzoDgii With {
+                                .FacNumero = If(r.IsDBNull(0), Nothing, Convert.ToString(r.GetValue(0))),
+                                .Tipo = If(r.IsDBNull(1), Nothing, Convert.ToString(r.GetValue(1))),
+                                .UsuCodigo = If(r.IsDBNull(2), Nothing, Convert.ToString(r.GetValue(2))),
+                                .Caja = If(r.IsDBNull(3), Nothing, Convert.ToString(r.GetValue(3))),
+                                .TrackId = If(r.IsDBNull(4), Nothing, Convert.ToString(r.GetValue(4))),
+                                .Estado = If(r.IsDBNull(5), Nothing, Convert.ToString(r.GetValue(5)))
+                            })
+                        End While
+                    End Using
+                End Using
+            End Using
+        Catch ex As Exception
+            RegistrarLogCliente("ListarPendientesRefuerzoDgii: " & ex.Message)
+        End Try
+        Return lista
+    End Function
+
     Public Shared Function ObtenerUltimaBitacoraDgii(cadenaConexion As String, doc As EncfDocumentoRef) As BitacoraDgiiUltimo
         If doc Is Nothing OrElse String.IsNullOrWhiteSpace(cadenaConexion) Then Return Nothing
         Dim sql As String

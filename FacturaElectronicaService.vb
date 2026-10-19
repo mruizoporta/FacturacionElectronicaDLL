@@ -315,6 +315,154 @@ Public Class FacturaElectronicaService
         End Try
     End Function
 
+    ''' <summary>
+    ''' Proceso independiente: reconsulta en DGII los envíos de las últimas horas que
+    ''' DASHA no tiene como Aceptado (timeout, 401, "en proceso"). Si la DGII ya los
+    ''' aceptó, actualiza la BD y NO genera otra secuencia.
+    ''' Llamar desde un botón/timer de Admin o POS: ReforzarPendientesDGII(emp, 24).
+    ''' </summary>
+    <ComVisible(True)>
+    Public Function ReforzarPendientesDGII(emp As String, Optional horas As Integer = 24) As String
+        Try
+            CargarConfiguracion()
+            Seguridad.ObtenerToken()
+            Dim errTok = ErrorSiTokenVacio()
+            If errTok IsNot Nothing Then Return errTok
+
+            Dim empInt As Integer
+            If Not Integer.TryParse(emp, empInt) Then
+                Return Helper.ConstruirJsonRespuestaOperacion(
+                    New Helper.DgiiEstadoRespuesta With {.Estado = "Error", .Mensaje = "emp inválido.", .Aceptado = False})
+            End If
+            If horas <= 0 Then horas = 24
+            If horas > 168 Then horas = 168
+
+            Dim token As String = GlobalVariables.token
+            Dim pendientes = Helper.ListarPendientesRefuerzoDgii(cadenaConexion, empInt, horas)
+            Dim nConsultados As Integer = 0
+            Dim nAceptados As Integer = 0
+            Dim nPendientes As Integer = 0
+            Dim nRechazados As Integer = 0
+            Dim nErrores As Integer = 0
+
+            For Each p In pendientes
+                If String.IsNullOrWhiteSpace(p.TrackId) Then Continue For
+                nConsultados += 1
+                Try
+                    Dim http = ConsultarEstadoFacturaHttp(p.TrackId.Trim(), token)
+                    If CInt(http.Status) = 401 Then
+                        token = TokenNuevoTras401()
+                        If token = "" Then
+                            nErrores += 1
+                            Continue For
+                        End If
+                        http = ConsultarEstadoFacturaHttp(p.TrackId.Trim(), token)
+                    End If
+                    Dim parseada = Helper.ParsearRespuestaDgii(http.Body)
+                    Dim doc = DocDesdePendienteBitacora(empInt, p)
+                    If parseada.Aceptado Then
+                        PersistirReconsultaDgii(doc, TipoEcfDesdeBitacora(p.Tipo), False, http.Body)
+                        nAceptados += 1
+                        Helper.RegistrarLogCliente("[REFUERZO] Aceptado en DGII. ticket/fac=" & p.FacNumero & " eNCF=" & If(parseada.Encf, "") & " track=" & p.TrackId)
+                    ElseIf parseada.EsPendiente Then
+                        nPendientes += 1
+                    ElseIf parseada.EsRechazado Then
+                        nRechazados += 1
+                    Else
+                        nPendientes += 1
+                    End If
+                Catch exItem As Exception
+                    nErrores += 1
+                    Helper.RegistrarLogCliente("[REFUERZO] EX fac=" & p.FacNumero & ": " & exItem.Message)
+                End Try
+            Next
+
+            Dim msg = "Refuerzo DGII: consultados=" & nConsultados.ToString() &
+                      " aceptados=" & nAceptados.ToString() &
+                      " pendientes=" & nPendientes.ToString() &
+                      " rechazados=" & nRechazados.ToString() &
+                      " errores=" & nErrores.ToString()
+            Helper.RegistrarLogCliente("[REFUERZO] " & msg)
+            Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
+                .Estado = If(nAceptados > 0, "Aceptado", "En proceso"),
+                .Aceptado = nAceptados > 0,
+                .EsPendiente = nAceptados = 0,
+                .Mensaje = msg
+            })
+        Catch ex As Exception
+            Helper.RegistrarLogCliente("ReforzarPendientesDGII EX: " & ex.ToString())
+            Return Helper.ConstruirJsonRespuestaOperacion(
+                New Helper.DgiiEstadoRespuesta With {.Estado = "Error", .Mensaje = ex.Message, .Aceptado = False},
+                ex.ToString())
+        End Try
+    End Function
+
+    Private Shared Function ConsultarDgiiAntesDeReenviar(
+        doc As Helper.EncfDocumentoRef,
+        tipoECF As String,
+        isNotaCredito As Boolean,
+        estadoPrev As Helper.DocumentoEncfEstado
+    ) As String
+        Try
+            Dim bit = Helper.ObtenerUltimaBitacoraDgii(cadenaConexion, doc)
+            Dim track = If(bit Is Nothing, "", If(bit.TrackId, "").Trim())
+            If track = "" Then Return Nothing
+
+            Seguridad.ObtenerToken()
+            Dim token = If(GlobalVariables.token, "").Trim()
+            If token = "" Then Return Nothing
+
+            Dim http = ConsultarEstadoFacturaHttp(track, token)
+            If CInt(http.Status) = 401 Then
+                token = TokenNuevoTras401()
+                If token = "" Then Return Nothing
+                http = ConsultarEstadoFacturaHttp(track, token)
+            End If
+
+            Dim parseada = Helper.ParsearRespuestaDgii(http.Body)
+            If parseada.Aceptado Then
+                Helper.RegistrarLogCliente("[DGII] DGII ya aceptó (consulta previa a reenvío). No se reenvía. eNCF=" & If(parseada.Encf, If(estadoPrev.ENCF, "")) & " track=" & track)
+                Try
+                    PersistirReconsultaDgii(doc, tipoECF, isNotaCredito, http.Body)
+                Catch exSp As Exception
+                    Helper.RegistrarLogCliente("[DGII] Aceptado en DGII pero falló persistir: " & exSp.Message)
+                End Try
+                Return Helper.ConstruirJsonRespuestaOperacion(parseada, http.Body)
+            End If
+
+            If parseada.EsPendiente Then
+                Helper.RegistrarLogCliente("[DGII] Aún en proceso en DGII. No se reenvía para no duplicar. track=" & track)
+                Return Helper.ConstruirJsonRespuestaOperacion(parseada, http.Body)
+            End If
+        Catch ex As Exception
+            Helper.RegistrarLogCliente("[DGII] ConsultarDgiiAntesDeReenviar EX: " & ex.Message)
+        End Try
+        Return Nothing
+    End Function
+
+    Private Shared Function DocDesdePendienteBitacora(emp As Integer, p As Helper.PendienteRefuerzoDgii) As Helper.EncfDocumentoRef
+        Dim tipo = If(p.Tipo, "").Trim().ToUpperInvariant()
+        Dim fac As Integer
+        Integer.TryParse(If(p.FacNumero, "0"), fac)
+        Dim usu As Integer, caja As Integer
+        Integer.TryParse(If(p.UsuCodigo, "0"), usu)
+        Integer.TryParse(If(p.Caja, "0"), caja)
+        If tipo = "MONTOS_TICKET" Then
+            Return Helper.EncfDocumentoRef.PosTicket(emp, 1, usu, caja, fac)
+        End If
+        If tipo = "RESTBAR" Then
+            Return Helper.EncfDocumentoRef.ResBar(emp, 1, usu, caja, fac)
+        End If
+        Return Helper.EncfDocumentoRef.Factura(emp, 1, "A", 1, fac)
+    End Function
+
+    Private Shared Function TipoEcfDesdeBitacora(tipoBit As String) As String
+        Dim t = If(tipoBit, "").Trim().ToUpperInvariant()
+        If t = "DEVOLUCION" Then Return "34"
+        If t = "NOTA_CREDITO" Then Return "34"
+        If t = "PROV_FACTURAS" Then Return "41"
+        Return "31"
+    End Function
 
     ''' <summary>
     ''' MÃ©todo principal para enviar una factura electrÃ³nica desde Delphi
@@ -1542,11 +1690,14 @@ Public Class FacturaElectronicaService
                 })
             End If
 
-            ' No se busca un trackId previo en la bitácora: mezcla todos los tipos de
-            ' documento (una devolución #233 encontraba la factura #233). La decisión
-            ' sale solo de la tabla del propio documento: si no está aceptado, se envía.
+            ' Antes de reenviar: preguntar a la DGII. La recepción es async; DASHA puede
+            ' haber marcado Rechazado/Error y la DGII después Aceptado. Un reenvío con
+            ' secuencia nueva deja dos eNCF aceptados para la misma factura.
+            Dim consultado = ConsultarDgiiAntesDeReenviar(doc, tipoECF, isNotaCredito, estadoPrev)
+            If consultado IsNot Nothing Then Return consultado
+
             If Helper.DocumentoYaTransmitido(estadoPrev) Then
-                Helper.RegistrarLogCliente("[DGII] Transmitido y no aceptado. Se envía de nuevo. eNCF actual=" & If(estadoPrev.ENCF, "") & " tipo=" & doc.TipoDocumento)
+                Helper.RegistrarLogCliente("[DGII] Transmitido, DGII no confirma aceptado. Se reenvía el MISMO eNCF=" & If(estadoPrev.ENCF, "") & " tipo=" & doc.TipoDocumento)
             End If
         Catch ex As Exception
             Helper.RegistrarLogCliente("[DGII] IntentarReusarEnvioExistenteDgii EX: " & ex.Message)
