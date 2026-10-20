@@ -481,6 +481,17 @@ Public Class FacturaElectronicaService
             End If
 
             Dim parseada = Helper.ParsearRespuestaDgii(http.Body)
+            Dim encfDgii = If(parseada.Encf, "").Trim()
+            Dim prefEcf = Helper.PrefijoEncfTipo(tipoECF)
+            Dim exigeEncfTipo = prefEcf = "E34" OrElse prefEcf = "E33" OrElse prefEcf = "E41" OrElse prefEcf = "E43" OrElse prefEcf = "E47"
+            If exigeEncfTipo AndAlso Not Helper.EncFEsDelTipo(encfDgii, tipoECF) Then
+                Helper.RegistrarLogCliente("[DGII] trackId de bitácora es de otro e-CF (" & encfDgii & "), se ignora. esperado=" & prefEcf & " track=" & track)
+                Return Nothing
+            End If
+            If (Not exigeEncfTipo) AndAlso encfDgii <> "" AndAlso Not Helper.EncFEsDelTipo(encfDgii, tipoECF) Then
+                Helper.RegistrarLogCliente("[DGII] trackId de bitácora es de otro e-CF (" & encfDgii & "), se ignora. esperado=" & prefEcf & " track=" & track)
+                Return Nothing
+            End If
             If parseada.Aceptado Then
                 Helper.RegistrarLogCliente("[DGII] DGII ya aceptó (consulta previa a reenvío). No se reenvía. eNCF=" & If(parseada.Encf, If(estadoPrev.ENCF, "")) & " track=" & track)
                 Try
@@ -501,6 +512,13 @@ Public Class FacturaElectronicaService
         Return Nothing
     End Function
 
+    Private Shared Function SucInt(suc As String) As Integer
+        Dim n As Integer
+        Integer.TryParse(If(suc, "").Trim(), n)
+        If n > 0 Then Return n
+        Return 0
+    End Function
+
     Private Shared Function DocDesdePendienteBitacora(emp As Integer, p As Helper.PendienteRefuerzoDgii) As Helper.EncfDocumentoRef
         Dim tipo = If(p.Tipo, "").Trim().ToUpperInvariant()
         Dim fac As Integer
@@ -508,19 +526,20 @@ Public Class FacturaElectronicaService
         Dim usu As Integer, caja As Integer
         Integer.TryParse(If(p.UsuCodigo, "0"), usu)
         Integer.TryParse(If(p.Caja, "0"), caja)
+        Dim suc = If(p.SucCodigo > 0, p.SucCodigo, 1)
         If tipo = "MONTOS_TICKET" Then
-            Return Helper.EncfDocumentoRef.PosTicket(emp, 1, usu, caja, fac)
+            Return Helper.EncfDocumentoRef.PosTicket(emp, suc, usu, caja, fac)
         End If
         If tipo = "RESTBAR" Then
-            Return Helper.EncfDocumentoRef.ResBar(emp, 1, usu, caja, fac)
+            Return Helper.EncfDocumentoRef.ResBar(emp, suc, usu, caja, fac)
         End If
         If tipo = "DEVOLUCION" Then
-            Return Helper.EncfDocumentoRef.Devolucion(emp, 1, fac)
+            Return Helper.EncfDocumentoRef.Devolucion(emp, suc, fac)
         End If
         If tipo = "NOTA_CREDITO" Then
-            Return Helper.EncfDocumentoRef.NotaCredito(emp, 1, fac)
+            Return Helper.EncfDocumentoRef.NotaCredito(emp, suc, fac)
         End If
-        Return Helper.EncfDocumentoRef.Factura(emp, 1, "A", 1, fac)
+        Return Helper.EncfDocumentoRef.Factura(emp, suc, "A", 1, fac)
     End Function
 
     Private Shared Function TipoEcfDesdeBitacora(tipoBit As String) As String
@@ -1748,13 +1767,17 @@ Public Class FacturaElectronicaService
         Try
             Dim estadoPrev = Helper.ObtenerEstadoEncf(cadenaConexion, doc)
             If Helper.DocumentoYaAceptado(estadoPrev) Then
-                Helper.RegistrarLogCliente("[DGII] Ya aceptado. No se reenvía. eNCF=" & If(estadoPrev.ENCF, "") & " tipo=" & doc.TipoDocumento)
-                Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
-                    .Estado = "Aceptado",
-                    .Aceptado = True,
-                    .Encf = estadoPrev.ENCF,
-                    .Mensaje = "Documento ya aceptado. No se reenvía para evitar duplicado."
-                })
+                Dim bitOk = Helper.ObtenerUltimaBitacoraDgii(cadenaConexion, doc)
+                If bitOk IsNot Nothing AndAlso Helper.EncFEsDelTipo(estadoPrev.ENCF, tipoECF) Then
+                    Helper.RegistrarLogCliente("[DGII] Ya aceptado. No se reenvía. eNCF=" & If(estadoPrev.ENCF, "") & " tipo=" & doc.TipoDocumento)
+                    Return Helper.ConstruirJsonRespuestaOperacion(New Helper.DgiiEstadoRespuesta With {
+                        .Estado = "Aceptado",
+                        .Aceptado = True,
+                        .Encf = estadoPrev.ENCF,
+                        .Mensaje = "Documento ya aceptado. No se reenvía para evitar duplicado."
+                    })
+                End If
+                Helper.RegistrarLogCliente("[DGII] AceptadoDGII=1 pero no hay bitácora real de e-CF " & If(tipoECF, "") & " eNCF=" & If(estadoPrev.ENCF, "") & ". Se envía.")
             End If
 
             ' Antes de reenviar: preguntar a la DGII. La recepción es async; DASHA puede
@@ -3557,7 +3580,7 @@ WHERE usu_codigo = @usu
             If codigoPersist.Length < 6 Then
                 codigoPersist = ObtenerCodigoSeguridadDesdeBitacora(
                     cadenaConexion, emp_codigo, facNumero,
-                    Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito))
+                    Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito), suc_codigo)
             End If
             Dim fechaRecepcion As String = DateTime.Now.ToString("M/d/yyyy h:mm:ss tt")
             Dim codigoMensaje As String = If(parsedDgii.CodigoMensaje, "")
@@ -3610,7 +3633,8 @@ WHERE usu_codigo = @usu
             Helper.InsertarBitacoraDGII(
             cadenaConexion, emp_codigo, facNumero, estado, trackId,
             codigoMensaje, mensajeError, xmlText, fechaRec, "", "",
-            Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito)
+            Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito),
+            SucInt(suc_codigo)
         )
             ' ---------- ActualizaciÃ³n de BD: Aceptado o Rechazado ----------
             Dim aceptado As Integer = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
@@ -3797,13 +3821,13 @@ WHERE usu_codigo = @usu
             End If
 
             Helper.InsertarBitacoraDGII(cadenaConexion, emp_codigo, facNumero, estado, trackId, codigoMensaje, mensajeError, "", fechaRec, "", "",
-                Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito))
+                Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito), SucInt(suc_codigo))
 
             Dim aceptado As Integer = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
             Helper.AjustarPersistenciaPendiente(aceptado, secuenciautilizada, estado)
 
             Dim tipoBit = Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito)
-            Dim codigoseguridadRecons As String = ObtenerCodigoSeguridadDesdeBitacora(cadenaConexion, emp_codigo, facNumero, tipoBit)
+            Dim codigoseguridadRecons As String = ObtenerCodigoSeguridadDesdeBitacora(cadenaConexion, emp_codigo, facNumero, tipoBit, suc_codigo)
             Dim fechaFirmaRecons As DateTime = DateTime.Now
             If (If(TipoeCF, "").Trim() = "34") AndAlso Not (If(encf, "").Trim().StartsWith("E34")) Then
                 Dim g = If(glbncfEnvia, "").Trim()
@@ -3955,7 +3979,7 @@ WHERE usu_codigo = @usu
             End If
 
             Helper.InsertarBitacoraDGII(cadenaConexion, emp_codigo, ticket, estado, trackId, codigoMensaje, mensajeError, "", fechaRec, usu_codigo, caja,
-                Helper.ResolverTipoBitacoraTicket(esRestBar))
+                Helper.ResolverTipoBitacoraTicket(esRestBar), SucInt(suc_codigo))
 
             Dim aceptado As Integer = If(Helper.EsEstadoAceptadoDgii(estado), 1, 0)
             Helper.AjustarPersistenciaPendiente(aceptado, secuenciautilizada, estado)
@@ -4081,7 +4105,8 @@ WHERE usu_codigo = @usu
             Helper.InsertarBitacoraDGII(
             cadenaConexion, emp_codigo, ticket, estado, trackId,
             codigoMensaje, mensajeError, xmlText, fechaRec, usu_codigo, caja,
-            Helper.ResolverTipoBitacoraTicket(isResBar)
+            Helper.ResolverTipoBitacoraTicket(isResBar),
+            SucInt(suc_codigo)
         )
 
             ' ---------- ActualizaciÃ³n de BD: Aceptado o Rechazado ----------
@@ -8883,18 +8908,20 @@ SELECT @nuevo;"
     End Function
 
     ''' <summary>Si el envio guardo XML en bitacora y luego la reconsulta borro el codigo, lo recupera.</summary>
-    Private Shared Function ObtenerCodigoSeguridadDesdeBitacora(cadenaConexion As String, empCodigo As String, facNumero As String, tipoBitacora As String) As String
+    Private Shared Function ObtenerCodigoSeguridadDesdeBitacora(cadenaConexion As String, empCodigo As String, facNumero As String, tipoBitacora As String, Optional sucCodigo As String = "") As String
         Try
             Dim sql As String =
                 "SELECT TOP 1 XML_Firmado FROM dbo.BitacoraFacturacionElectronicaDGII " &
                 "WHERE emp_codigo = @emp AND fac_numero = @fac " &
                 "AND (@tipo IS NULL OR tipo = @tipo OR (tipo IS NULL AND @tipo = 'FACTURAS')) " &
+                "AND (@suc <= 0 OR suc_codigo = @suc OR suc_codigo IS NULL) " &
                 "AND XML_Firmado IS NOT NULL AND LEN(XML_Firmado) > 50 " &
-                "ORDER BY Fecha_Envio DESC"
+                "ORDER BY CASE WHEN suc_codigo = @suc THEN 0 ELSE 1 END, Fecha_Envio DESC"
             Using conn As New SqlConnection(cadenaConexion)
                 Using cmd As New SqlCommand(sql, conn)
                     cmd.Parameters.AddWithValue("@emp", empCodigo)
                     cmd.Parameters.AddWithValue("@fac", facNumero)
+                    cmd.Parameters.Add("@suc", SqlDbType.Int).Value = SucInt(sucCodigo)
                     If String.IsNullOrWhiteSpace(tipoBitacora) Then
                         cmd.Parameters.AddWithValue("@tipo", DBNull.Value)
                     Else
@@ -9844,7 +9871,8 @@ SELECT @nuevo;"
             mensajeError,
             encf,                   ' guarda el eNCF si vino
             DateTime.Now, "", "",
-            Helper.ResolverTipoBitacoraDgii(TipoeCF, False)
+            Helper.ResolverTipoBitacoraDgii(TipoeCF, False),
+            SucInt(suc_codigo)
         )
 
             ' -------- ActualizaciÃ³n de datos locales --------
@@ -9924,7 +9952,8 @@ SELECT @nuevo;"
                 Helper.InsertarBitacoraDGII(
                 cadenaConexion, emp_codigo, facNumero,
                 "EXCEPCION", "", "", ex.Message, "", DateTime.Now, "", "",
-                Helper.ResolverTipoBitacoraDgii(TipoeCF, False)
+                Helper.ResolverTipoBitacoraDgii(TipoeCF, False),
+                SucInt(suc_codigo)
             )
             Catch
                 ' swallow
@@ -10016,7 +10045,8 @@ SELECT @nuevo;"
             mensajeError,
             encf,                   ' guarda el eNCF si vino
             DateTime.Now, usu_codigo, caja,
-            Helper.ResolverTipoBitacoraTicket(esResBarFlow)
+            Helper.ResolverTipoBitacoraTicket(esResBarFlow),
+            SucInt(suc_codigo)
         )
 
             ' âœ… Monto/XML: Factura_RestBar o Montos_Ticket siempre (como resumen administrativo / Facturas.DGII_MontoEnviado).
@@ -10151,7 +10181,8 @@ SELECT @nuevo;"
                 Helper.InsertarBitacoraDGII(
                 cadenaConexion, emp_codigo, ticket,
                 "EXCEPCION", "", "", ex.Message, "", DateTime.Now, usu_codigo, caja,
-                Helper.ResolverTipoBitacoraTicket(esResBarFlow)
+                Helper.ResolverTipoBitacoraTicket(esResBarFlow),
+                SucInt(suc_codigo)
             )
             Catch
                 ' swallow

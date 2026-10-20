@@ -541,16 +541,18 @@ WHERE tipo_documento = @tipo AND doc_clave = @clave AND eNCF_nuevo = @encf_nue;"
 "SELECT TOP (1) b.MensajeError FROM dbo.BitacoraFacturacionElectronicaDGII b
 WHERE b.emp_codigo = @emp AND b.fac_numero = @fac AND b.usu_codigo = @usu AND b.caja = @caja
   AND (b.tipo = @tipo_bit OR b.tipo IS NULL)
+  AND (@suc <= 0 OR b.suc_codigo = @suc OR b.suc_codigo IS NULL)
   AND b.MensajeError IS NOT NULL AND LTRIM(RTRIM(b.MensajeError)) <> ''
-ORDER BY b.Fecha_Envio DESC;"
+ORDER BY CASE WHEN b.suc_codigo = @suc THEN 0 ELSE 1 END, b.Fecha_Envio DESC;"
         Else
             sql =
 "SELECT TOP (1) b.MensajeError FROM dbo.BitacoraFacturacionElectronicaDGII b
 WHERE b.emp_codigo = @emp
   AND LTRIM(RTRIM(CONVERT(VARCHAR(30), b.fac_numero))) = LTRIM(RTRIM(@fac))
   AND (b.tipo = @tipo_bit OR (b.tipo IS NULL AND @tipo_bit = 'FACTURAS'))
+  AND (@suc <= 0 OR b.suc_codigo = @suc OR b.suc_codigo IS NULL)
   AND b.MensajeError IS NOT NULL AND LTRIM(RTRIM(b.MensajeError)) <> ''
-ORDER BY b.Fecha_Envio DESC;"
+ORDER BY CASE WHEN b.suc_codigo = @suc THEN 0 ELSE 1 END, b.Fecha_Envio DESC;"
             ' Filas viejas sin tipo son de facturas: solo aplican a facturas.
             tipoBitacora = ResolverTipoBitacoraDocumento(doc)
         End If
@@ -558,6 +560,7 @@ ORDER BY b.Fecha_Envio DESC;"
             Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
                 Using cmd As New SqlCommand(sql, conn)
                     cmd.Parameters.Add("@emp", SqlDbType.Int).Value = doc.EmpCodigo
+                    cmd.Parameters.Add("@suc", SqlDbType.Int).Value = doc.SucCodigo
                     Dim numTxt = If(Not String.IsNullOrWhiteSpace(doc.DocNumeroStr), doc.DocNumeroStr,
                                     If(doc.DocNumero.HasValue, doc.DocNumero.Value.ToString(), "0"))
                     cmd.Parameters.Add("@fac", SqlDbType.VarChar, 30).Value = numTxt
@@ -704,6 +707,21 @@ ORDER BY b.Fecha_Envio DESC;"
                (estado.AceptadoLuganis.HasValue AndAlso estado.AceptadoLuganis.Value)
     End Function
 
+    Public Shared Function PrefijoEncfTipo(tipoECF As String) As String
+        Dim t = If(tipoECF, "").Trim()
+        If t = "" Then Return ""
+        If t.StartsWith("E", StringComparison.OrdinalIgnoreCase) Then Return t.ToUpperInvariant()
+        Dim n As Integer
+        If Integer.TryParse(t, n) Then Return "E" & n.ToString("00")
+        Return "E" & t
+    End Function
+
+    Public Shared Function EncFEsDelTipo(encf As String, tipoECF As String) As Boolean
+        Dim pref = PrefijoEncfTipo(tipoECF)
+        If pref = "" OrElse String.IsNullOrWhiteSpace(encf) Then Return False
+        Return encf.Trim().StartsWith(pref, StringComparison.OrdinalIgnoreCase)
+    End Function
+
     Public Shared Function DocumentoYaTransmitido(estado As DocumentoEncfEstado) As Boolean
         If estado Is Nothing Then Return False
         If estado.EnviadoDGII.HasValue AndAlso estado.EnviadoDGII.Value Then Return True
@@ -749,6 +767,7 @@ ORDER BY b.Fecha_Envio DESC;"
         Public Property Caja As String
         Public Property TrackId As String
         Public Property Estado As String
+        Public Property SucCodigo As Integer
     End Class
 
     Public Class DevolucionPendienteEnvio
@@ -773,7 +792,7 @@ ORDER BY b.Fecha_Envio DESC;"
         If String.IsNullOrWhiteSpace(cadenaConexion) OrElse emp <= 0 Then Return lista
         If horas <= 0 Then horas = 24
         Const sql As String =
-"SELECT TOP 40 b.fac_numero, b.tipo, b.usu_codigo, b.caja, b.trackingID, b.Estado
+"SELECT TOP 40 b.fac_numero, b.tipo, b.usu_codigo, b.caja, b.trackingID, b.Estado, ISNULL(b.suc_codigo, 1)
 FROM dbo.BitacoraFacturacionElectronicaDGII b
 WHERE b.emp_codigo = @emp
   AND b.Fecha_Envio >= DATEADD(hour, -@horas, GETDATE())
@@ -795,7 +814,8 @@ ORDER BY b.Fecha_Envio DESC;"
                                 .UsuCodigo = If(r.IsDBNull(2), Nothing, Convert.ToString(r.GetValue(2))),
                                 .Caja = If(r.IsDBNull(3), Nothing, Convert.ToString(r.GetValue(3))),
                                 .TrackId = If(r.IsDBNull(4), Nothing, Convert.ToString(r.GetValue(4))),
-                                .Estado = If(r.IsDBNull(5), Nothing, Convert.ToString(r.GetValue(5)))
+                                .Estado = If(r.IsDBNull(5), Nothing, Convert.ToString(r.GetValue(5))),
+                                .SucCodigo = If(r.IsDBNull(6), 1, Convert.ToInt32(r.GetValue(6)))
                             })
                         End While
                     End Using
@@ -904,7 +924,8 @@ ORDER BY f.FAC_FECHA DESC;"
 FROM dbo.BitacoraFacturacionElectronicaDGII b
 WHERE b.emp_codigo = @emp AND b.fac_numero = @fac AND b.usu_codigo = @usu AND b.caja = @caja
   AND (b.tipo = @tipo_bit OR b.tipo IS NULL)
-ORDER BY b.Fecha_Envio DESC;"
+  AND (@suc <= 0 OR b.suc_codigo = @suc OR b.suc_codigo IS NULL)
+ORDER BY CASE WHEN b.suc_codigo = @suc THEN 0 ELSE 1 END, b.Fecha_Envio DESC;"
         Else
             sql =
 "SELECT TOP (1) b.Estado, b.trackingID, b.CodigoError, b.MensajeError
@@ -912,14 +933,22 @@ FROM dbo.BitacoraFacturacionElectronicaDGII b
 WHERE b.emp_codigo = @emp
   AND LTRIM(RTRIM(CONVERT(VARCHAR(30), b.fac_numero))) = LTRIM(RTRIM(@fac))
   AND (b.tipo = @tipo_bit OR (b.tipo IS NULL AND @tipo_bit = 'FACTURAS'))
-ORDER BY b.Fecha_Envio DESC;"
+  AND (@suc <= 0 OR b.suc_codigo = @suc OR b.suc_codigo IS NULL)
+  AND (
+        @tipo_bit NOT IN ('DEVOLUCION', 'NOTA_CREDITO')
+        OR b.XML_Firmado LIKE '%E34%'
+      )
+ORDER BY CASE WHEN b.suc_codigo = @suc THEN 0 ELSE 1 END, b.Fecha_Envio DESC;"
             ' Filas viejas sin tipo son de facturas: solo se reutilizan para facturas.
+            ' DEVOLUCION/NC: no reutilizar un trackId de factura con el mismo número
+            ' (en Vega copiaron bitácora FACTURAS 266 como tipo DEVOLUCION).
             tipoBitacora = ResolverTipoBitacoraDocumento(doc)
         End If
         Try
             Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
                 Using cmd As New SqlCommand(sql, conn)
                     cmd.Parameters.Add("@emp", SqlDbType.Int).Value = doc.EmpCodigo
+                    cmd.Parameters.Add("@suc", SqlDbType.Int).Value = doc.SucCodigo
                     Dim numTxt = If(Not String.IsNullOrWhiteSpace(doc.DocNumeroStr), doc.DocNumeroStr,
                                     If(doc.DocNumero.HasValue, doc.DocNumero.Value.ToString(), "0"))
                     cmd.Parameters.Add("@fac", SqlDbType.VarChar, 30).Value = numTxt
@@ -1027,12 +1056,18 @@ ORDER BY secuencia_encf DESC, fecha_registro DESC;"
     Public Shared Sub InsertarBitacoraDGII(cadenaConexion As String, emp_codigo As String, fac_numero As String, estado As String,
                                         trackingID As String, codigoError As String, mensajeError As String,
                                         xmlFirmado As String, fechaEnvio As DateTime, usu_codigo As String, caja As String,
-                                        tipo As String)
+                                        tipo As String,
+                                        Optional sucCodigo As Integer = 0)
         Using conn As New SqlConnection(NormalizarCadenaSqlClient(cadenaConexion))
-            Using cmd As New SqlCommand("INSERT INTO BitacoraFacturacionElectronicaDGII (emp_codigo, fac_numero, Estado, trackingID, CodigoError, MensajeError, XML_Firmado, Fecha_Envio, usu_codigo, caja, tipo) " &
-                                    "VALUES (@emp_codigo, @fac_numero, @Estado, @trackingID, @CodigoError, @MensajeError, @XML_Firmado, @Fecha_Envio, @usu_codigo, @caja, @tipo)", conn)
+            Using cmd As New SqlCommand("INSERT INTO BitacoraFacturacionElectronicaDGII (emp_codigo, suc_codigo, fac_numero, Estado, trackingID, CodigoError, MensajeError, XML_Firmado, Fecha_Envio, usu_codigo, caja, tipo) " &
+                                    "VALUES (@emp_codigo, @suc_codigo, @fac_numero, @Estado, @trackingID, @CodigoError, @MensajeError, @XML_Firmado, @Fecha_Envio, @usu_codigo, @caja, @tipo)", conn)
 
                 cmd.Parameters.AddWithValue("@emp_codigo", emp_codigo)
+                If sucCodigo > 0 Then
+                    cmd.Parameters.Add("@suc_codigo", SqlDbType.Int).Value = sucCodigo
+                Else
+                    cmd.Parameters.Add("@suc_codigo", SqlDbType.Int).Value = DBNull.Value
+                End If
                 cmd.Parameters.AddWithValue("@fac_numero", fac_numero)
                 cmd.Parameters.AddWithValue("@Estado", estado)
                 cmd.Parameters.AddWithValue("@trackingID", trackingID)
