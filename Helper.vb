@@ -289,7 +289,9 @@ WHERE emp_codigo=@emp AND suc_codigo=@suc AND nde_numero=@num;"
                 sql =
 "SELECT TOP (1) eNCF, Error_DGII, AceptadoDGII, Error_Luganis, AceptadoLuganis, Enviado_DGII, secuenciaUtilizadaDGI, trackIdLuganis
 FROM dbo.Montos_Ticket
-WHERE emp_codigo=@emp AND suc_codigo=@suc AND usu_codigo=@usu AND caja=@caja AND ticket=@num;"
+WHERE emp_codigo=@emp AND suc_codigo=@suc AND usu_codigo=@usu AND caja=@caja AND ticket=@num
+ORDER BY fecha DESC;"
+                ' El numero de ticket se repite por dia (numeracion por fecha): tomar el mas reciente.
             Case TipoEncfResBar
                 sql =
 "SELECT TOP (1) eNCF, Error_DGII, AceptadoDGII, Error_Luganis, AceptadoLuganis, Enviado_DGII, secuenciaUtilizadaDGI, trackIdLuganis
@@ -926,6 +928,16 @@ WHERE b.emp_codigo = @emp AND b.fac_numero = @fac AND b.usu_codigo = @usu AND b.
   AND (b.tipo = @tipo_bit OR b.tipo IS NULL)
   AND (@suc <= 0 OR b.suc_codigo = @suc OR b.suc_codigo IS NULL)
 ORDER BY CASE WHEN b.suc_codigo = @suc THEN 0 ELSE 1 END, b.Fecha_Envio DESC;"
+            If doc.TipoDocumento.Equals(TipoEncfPos, StringComparison.OrdinalIgnoreCase) Then
+                ' El ticket se repite por dia: no tomar el trackId de un ticket de otro dia
+                ' con el mismo numero (la DLL lo daba por aceptado y no enviaba el de hoy).
+                sql = sql.Replace("ORDER BY CASE",
+"  AND b.Fecha_Envio >= (SELECT MAX(t.fecha) FROM dbo.Montos_Ticket t
+                        WHERE t.emp_codigo = @emp AND t.suc_codigo = @suc
+                          AND t.usu_codigo = CONVERT(INT, @usu) AND t.caja = CONVERT(INT, @caja)
+                          AND t.ticket = CONVERT(INT, @fac))
+ORDER BY CASE")
+            End If
         Else
             sql =
 "SELECT TOP (1) b.Estado, b.trackingID, b.CodigoError, b.MensajeError
