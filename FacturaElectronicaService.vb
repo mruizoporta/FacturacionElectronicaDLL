@@ -3642,7 +3642,7 @@ WHERE usu_codigo = @usu
 
             Select Case TipoeCF
                 Case "31", "32", "44", "45", "46"
-                    If fac_forma.Trim().Length > 0 Then
+                    If Not String.IsNullOrWhiteSpace(fac_forma) Then
                         Dim p As SqlParameter() = {
                         New SqlParameter("@emp_codigo", emp_codigo),
                         New SqlParameter("@suc_codigo", suc_codigo),
@@ -3650,7 +3650,7 @@ WHERE usu_codigo = @usu
                         New SqlParameter("@eNCF", encf),
                         New SqlParameter("@fac_forma", fac_forma),
                         New SqlParameter("@tfa_codigo", tfa_codigo),
-                        New SqlParameter("@codigoseguridad", codigoseguridad),
+                        ParamCodigoSeguridad(codigoPersist),
                         New SqlParameter("@fechafirma", fechaFirma),
                         New SqlParameter("@aceptado", aceptado),
                         New SqlParameter("@secuenciaUtilizada", secuenciautilizada)
@@ -3663,7 +3663,7 @@ WHERE usu_codigo = @usu
                     Dim p As SqlParameter() = {
                     New SqlParameter("@emp_codigo", emp_codigo),
                     New SqlParameter("@suc_codigo", suc_codigo),
-                    New SqlParameter("@fac_numero", facNumero.ToString()),
+                    New SqlParameter("@fac_numero", If(facNumero, "")),
                     New SqlParameter("@eNCF", encf),
                     New SqlParameter("@sup_codigo", sup_codigo),
                     New SqlParameter("@codigoseguridad", codigoseguridad),
@@ -3764,7 +3764,7 @@ WHERE usu_codigo = @usu
 
 
             ' ---------- EnvÃ­o al cliente SOLO si fue aceptado ----------
-            If aceptado = 1 AndAlso RncCliente.Trim().Length > 0 Then
+            If aceptado = 1 AndAlso Not String.IsNullOrWhiteSpace(RncCliente) Then
                 Try
                     Dim resCli = EnviarFacturaClienteSiTieneUrlAsync(
                     RncCliente, GlobalVariables.token, signedXml, facNumero
@@ -3836,7 +3836,7 @@ WHERE usu_codigo = @usu
 
             Select Case TipoeCF
                 Case "31", "32", "44", "45", "46"
-                    If fac_forma.Trim().Length > 0 Then
+                    If Not String.IsNullOrWhiteSpace(fac_forma) Then
                         Dim p As SqlParameter() = {
                             New SqlParameter("@emp_codigo", emp_codigo),
                             New SqlParameter("@suc_codigo", suc_codigo),
@@ -3844,7 +3844,7 @@ WHERE usu_codigo = @usu
                             New SqlParameter("@eNCF", encf),
                             New SqlParameter("@fac_forma", fac_forma),
                             New SqlParameter("@tfa_codigo", tfa_codigo),
-                            New SqlParameter("@codigoseguridad", codigoseguridadRecons),
+                            ParamCodigoSeguridad(codigoseguridadRecons),
                             New SqlParameter("@fechafirma", fechaFirmaRecons),
                             New SqlParameter("@aceptado", aceptado),
                             New SqlParameter("@secuenciaUtilizada", secuenciautilizada)
@@ -4140,7 +4140,7 @@ WHERE usu_codigo = @usu
             End Try
 
             ' ---------- EnvÃ­o al cliente SOLO si fue aceptado ----------
-            If aceptado = 1 AndAlso RncCliente.Trim().Length > 0 Then
+            If aceptado = 1 AndAlso Not String.IsNullOrWhiteSpace(RncCliente) Then
                 Try
                     Dim resCli = EnviarFacturaClienteSiTieneUrlAsync(
                     RncCliente, GlobalVariables.token, signedXml, ticket
@@ -9894,7 +9894,7 @@ SELECT @nuevo;"
                 Helper.EjecutarProcedimientoAlmacenado(cadenaConexion, "SP_UPDATEDATOSDGI", parametros)
 
                 ' Enviar al cliente si aplica (sin async/await)
-                If RncCliente.Trim().Length > 0 Then
+                If Not String.IsNullOrWhiteSpace(RncCliente) Then
                     Try
                         Dim res As String = EnviarFacturaClienteSiTieneUrlAsync(
                         RncCliente, GlobalVariables.token, signedXml, facNumero
@@ -10134,7 +10134,7 @@ SELECT @nuevo;"
                 Helper.RegistrarLogCliente($"[SP Resumen POS] OK dbo.{spUpdateDatosTicket} rama=ACEPTADO ticket={ticket}")
 
                 ' Enviar al cliente si aplica (sin async/await)
-                If RncCliente.Trim().Length > 0 Then
+                If Not String.IsNullOrWhiteSpace(RncCliente) Then
                     Try
                         Dim res As String = EnviarFacturaClienteSiTieneUrlAsync(
                         RncCliente, GlobalVariables.token, signedXml, ticket
