@@ -10614,6 +10614,8 @@ SELECT @nuevo;"
 
         Dim consultaFactura As String = "SELECT * FROM vwComprasXML WHERE fac_numero='" & facNumero & "' AND sup_codigo='" & sup_codigo & "' AND emp_codigo='" & emp_codigo & "'"
         Dim facturaReader = EjecutarConsultaReader(cadenaconexion, consultaFactura)
+        Dim totalItems As Integer = 0
+        Dim itemsList As New List(Of Dictionary(Of String, Object))
 
         If facturaReader.Read() Then
             ' IdDoc en orden
@@ -10680,34 +10682,89 @@ SELECT @nuevo;"
             Helper.AddOptionalElement(xmlDoc, compradorNode, "CorreoComprador", facturaReader("sup_email"))
             Helper.AddOptionalElement(xmlDoc, compradorNode, "DireccionComprador", facturaReader("sup_direccion"))
 
-            ' Totales
-            Dim montoGravadoTotal As String = If(IsDBNull(facturaReader("fac_grabado")), "0", facturaReader("fac_grabado").ToString())
-            If montoGravadoTotal <> "0.00" Then
-                Helper.AddElement(xmlDoc, totalesNode, "MontoGravadoTotal", Decimal.Parse(montoGravadoTotal).ToString("F2"))
+            ' Totales. fac_grabado en 0 con ITBIS omite MontoGravadoI1 y DGII rechaza 1930.
+            Dim grabadoDec As Decimal = 0D
+            Dim exentoDec As Decimal = 0D
+            Dim itbisDec As Decimal = 0D
+            Dim totalDec As Decimal = 0D
+            Helper.TryGetDec(facturaReader, "fac_grabado", grabadoDec)
+            Helper.TryGetDec(facturaReader, "fac_exento", exentoDec)
+            Helper.TryGetDec(facturaReader, "fac_itbis", itbisDec)
+            Helper.TryGetDec(facturaReader, "fac_total", totalDec)
+            Dim grabadoOriginal As Decimal = grabadoDec
+
+            Dim consultadetalleFactura As String = "SELECT * FROM vwComprasDetalleXML WHERE fac_numero='" & facNumero & "' AND sup_codigo='" & sup_codigo & "' AND emp_codigo='" & emp_codigo & "'"
+            Dim detalleReader = EjecutarConsultaReader(cadenaconexion, consultadetalleFactura)
+
+            While detalleReader.Read()
+                totalItems += 1
+                Dim itemData As New Dictionary(Of String, Object)
+                For i As Integer = 0 To detalleReader.FieldCount - 1
+                    itemData(detalleReader.GetName(i)) = detalleReader.GetValue(i)
+                Next
+                itemsList.Add(itemData)
+            End While
+            detalleReader.Close()
+
+            If grabadoOriginal = 0D AndAlso itbisDec > 0D AndAlso itemsList.Count = 1 Then
+                Dim derivado = Decimal.Round(totalDec - itbisDec - exentoDec, 2, MidpointRounding.AwayFromZero)
+                If derivado > 0D Then
+                    itemsList(0)("IndicadorFacturacion") = "1"
+                    itemsList(0)("MontoItem") = derivado
+                    itemsList(0)("PrecioUnitarioItem") = derivado
+                    grabadoDec = derivado
+                    If exentoDec > 0D Then
+                        Dim exLine As New Dictionary(Of String, Object)(itemsList(0))
+                        exLine("NumeroLinea") = 2
+                        exLine("IndicadorFacturacion") = "4"
+                        exLine("MontoItem") = exentoDec
+                        exLine("PrecioUnitarioItem") = exentoDec
+                        itemsList.Add(exLine)
+                        totalItems += 1
+                    End If
+                Else
+                    Dim base = Decimal.Round(totalDec - itbisDec, 2, MidpointRounding.AwayFromZero)
+                    If base > 0D Then
+                        itemsList(0)("IndicadorFacturacion") = "1"
+                        itemsList(0)("MontoItem") = base
+                        itemsList(0)("PrecioUnitarioItem") = base
+                        grabadoDec = base
+                        exentoDec = 0D
+                    End If
+                End If
+            ElseIf grabadoOriginal = 0D AndAlso itbisDec > 0D Then
+                Dim sum1 As Decimal = 0D
+                Dim sum4 As Decimal = 0D
+                For Each it In itemsList
+                    Dim ind = it("IndicadorFacturacion").ToString().Trim()
+                    Dim montoLinea As Decimal = 0D
+                    If Not IsDBNull(it("MontoItem")) AndAlso it("MontoItem") IsNot Nothing Then
+                        montoLinea = Convert.ToDecimal(it("MontoItem"))
+                    End If
+                    If ind = "1" Then sum1 += montoLinea
+                    If ind = "4" Then sum4 += montoLinea
+                Next
+                If sum1 > 0D Then grabadoDec = sum1
+                If sum4 > 0D Then exentoDec = sum4
             End If
 
-            Dim MontoGravadoI1 As String = If(IsDBNull(facturaReader("fac_grabado")), "0", facturaReader("fac_grabado").ToString())
-            If MontoGravadoI1 <> "0.00" Then
-                Helper.AddElement(xmlDoc, totalesNode, "MontoGravadoI1", Decimal.Parse(MontoGravadoI1).ToString("F2"))
+            If grabadoDec > 0D Then
+                Helper.AddElement(xmlDoc, totalesNode, "MontoGravadoTotal", grabadoDec.ToString("F2", CultureInfo.InvariantCulture))
+                Helper.AddElement(xmlDoc, totalesNode, "MontoGravadoI1", grabadoDec.ToString("F2", CultureInfo.InvariantCulture))
             End If
 
-            Dim montoExento As String = If(IsDBNull(facturaReader("fac_exento")), "0", facturaReader("fac_exento").ToString())
-            If montoExento <> "0" AndAlso montoExento <> "0.00" Then
-                Helper.AddElement(xmlDoc, totalesNode, "MontoExento", Decimal.Parse(montoExento).ToString("F2"))
+            If exentoDec > 0D Then
+                Helper.AddElement(xmlDoc, totalesNode, "MontoExento", exentoDec.ToString("F2", CultureInfo.InvariantCulture))
             End If
-            Dim totalItbis As String = If(IsDBNull(facturaReader("fac_itbis")), "0", facturaReader("fac_itbis").ToString())
-            ' Verificar si itbis18 tiene un valor antes de agregar el nodo
-            If (Not String.IsNullOrEmpty(totalItbis)) And (totalItbis <> "0") And (totalItbis <> "0.00") Then
+
+            If itbisDec > 0D Then
                 Helper.AddElement(xmlDoc, totalesNode, "ITBIS1", "18")
-                '' Dim totalItbis As String = If(IsDBNull(facturaReader("fac_itbis")), "0", facturaReader("fac_itbis").ToString())
-                Helper.AddElement(xmlDoc, totalesNode, "TotalITBIS", Decimal.Parse(totalItbis).ToString("F2"))
-                Helper.AddElement(xmlDoc, totalesNode, "TotalITBIS1", Decimal.Parse(totalItbis).ToString("F2"))
-
+                Helper.AddElement(xmlDoc, totalesNode, "TotalITBIS", itbisDec.ToString("F2", CultureInfo.InvariantCulture))
+                Helper.AddElement(xmlDoc, totalesNode, "TotalITBIS1", itbisDec.ToString("F2", CultureInfo.InvariantCulture))
             End If
 
-
-            Dim montoTotal As Decimal = Convert.ToDecimal(montoGravadoTotal) + Convert.ToDecimal(montoExento) + Convert.ToDecimal(totalItbis)
-            Helper.AddElement(xmlDoc, totalesNode, "MontoTotal", montoTotal.ToString("F2"))
+            Dim montoTotal As Decimal = grabadoDec + exentoDec + itbisDec
+            Helper.AddElement(xmlDoc, totalesNode, "MontoTotal", montoTotal.ToString("F2", CultureInfo.InvariantCulture))
             Dim valorPagar As String = If(IsDBNull(facturaReader("ValorPagar")), "0", facturaReader("ValorPagar").ToString())
             Helper.AddElement(xmlDoc, totalesNode, "ValorPagar", Decimal.Parse(valorPagar).ToString("F2"))
 
@@ -10724,21 +10781,6 @@ SELECT @nuevo;"
         ' DetallesItems
         Dim detallesItemsNode As XmlElement = xmlDoc.CreateElement("DetallesItems")
         root.AppendChild(detallesItemsNode)
-
-        Dim consultadetalleFactura As String = "SELECT * FROM vwComprasDetalleXML WHERE fac_numero='" & facNumero & "' AND sup_codigo='" & sup_codigo & "' AND emp_codigo='" & emp_codigo & "'"
-        Dim detalleReader = EjecutarConsultaReader(cadenaconexion, consultadetalleFactura)
-        Dim totalItems As Integer = 0
-        Dim itemsList As New List(Of Dictionary(Of String, Object))
-
-        While detalleReader.Read()
-            totalItems += 1
-            Dim itemData As New Dictionary(Of String, Object)
-            For i As Integer = 0 To detalleReader.FieldCount - 1
-                itemData(detalleReader.GetName(i)) = detalleReader.GetValue(i)
-            Next
-            itemsList.Add(itemData)
-        End While
-        detalleReader.Close()
 
         For Each item In itemsList
             Dim itemNode As XmlElement = xmlDoc.CreateElement("Item")
