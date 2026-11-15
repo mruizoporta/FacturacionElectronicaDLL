@@ -14,6 +14,8 @@ Friend Class LuganisApiClient
     Private Shared ReadOnly _httpClient As HttpClient = CrearHttpClient()
 
     Private Shared Function CrearHttpClient() As HttpClient
+        ' Cargada desde Delphi, .NET arranca solo con TLS viejo; sin esto el login falla con "canal seguro SSL/TLS"
+        System.Net.ServicePointManager.SecurityProtocol = System.Net.ServicePointManager.SecurityProtocol Or System.Net.SecurityProtocolType.Tls12
         Dim c As New HttpClient()
         ' Evita que el envío quede colgado indefinidamente contra staging/red
         c.Timeout = TimeSpan.FromSeconds(60)
