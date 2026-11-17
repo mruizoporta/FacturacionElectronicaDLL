@@ -33,6 +33,8 @@ Public Class FacturaElectronicaService
     Private Shared isPOS As Boolean = False
     ''' <summary>Flujo alterno (mismas claves que POS: ticket, usu_codigo, caja) con vistas/tablas RESBAR en BD.</summary>
     Private Shared isResBar As Boolean = False
+    ''' <summary>True solo durante EnviarNotaCreditoCompra: E34 sobre una compra E41 (NotasCreditoCompra).</summary>
+    Private Shared esNotaCreditoCompra As Boolean = False
     ''' <summary>ADO.NET usa 30 s por defecto; GenerarXML y vistas pesadas o red lenta (p. ej. RDP/servidor remoto) superan ese lÃ­mite.</summary>
     Private Const SqlCommandTimeoutSegundos As Integer = 120
 
@@ -2579,6 +2581,53 @@ Public Class FacturaElectronicaService
 
     End Function
 
+    ''' <summary>
+    ''' Nota de credito (E34) que la empresa emite sobre una compra a informal (E41).
+    ''' Lee NotasCreditoCompra por vwNotaCreditoCompraXML y guarda con SP_UPDATEDATOSDGINCCOMPRA.
+    ''' Se puede volver a llamar: si la nota ya tiene eNCF, el SP lo reutiliza.
+    ''' </summary>
+    Public Function EnviarNotaCreditoCompra(emp As String,
+                                            suc As String,
+                                            ncrNumero As String,
+                                            empRnc As String) As String
+        Try
+            CargarConfiguracion()
+            Seguridad.ObtenerToken()
+            Dim errTok = ErrorSiTokenVacioTexto()
+            If errTok IsNot Nothing Then Return errTok
+
+            Dim p As SqlParameter() = {
+                New SqlParameter("@empresa", Convert.ToInt32(emp)),
+                New SqlParameter("@sucursal", Convert.ToInt32(suc)),
+                New SqlParameter("@numero", Convert.ToInt32(ncrNumero)),
+                New SqlParameter("@eNCF", SqlDbType.VarChar, 50) With {
+                    .Direction = ParameterDirection.Output,
+                    .Value = DBNull.Value
+                }
+            }
+            Helper.EjecutarProcedimientoAlmacenado(cadenaConexion, "AsignarSecuenciaNotaCreditoCompraDGII", p)
+            Dim encf As String = If(p(3).Value Is Nothing OrElse p(3).Value Is DBNull.Value, "", p(3).Value.ToString().Trim())
+            If Not encf.StartsWith("E34") Then
+                Return $"Error: la nota {ncrNumero} no modifica una compra E41 o no hay secuencia E34 disponible."
+            End If
+
+            esNotaCreditoCompra = True
+            Try
+                ' RncCliente vacio: el informal no recibe el XML por URL
+                Return ProcesoEnvioFacturaE34("", encf, "34", emp, suc, "", ncrNumero, empRnc, "", "", True)
+            Finally
+                esNotaCreditoCompra = False
+            End Try
+        Catch ex As Exception
+            Return $"Error: nota de credito de compra {ncrNumero} empresa {emp}, sucursal {suc}: {ex.Message}"
+        End Try
+    End Function
+
+    Private Shared Function TipoBitacoraEnvio(tipoECF As String, isNotaCredito As Boolean) As String
+        If esNotaCreditoCompra Then Return Helper.BitacoraTipoNotaCreditoCompra
+        Return Helper.ResolverTipoBitacoraDgii(tipoECF, isNotaCredito)
+    End Function
+
     Public Function EnviarNotasCredito(emp As String,
                                              suc As String,
                                                 sup As String,
@@ -3580,7 +3629,7 @@ WHERE usu_codigo = @usu
             If codigoPersist.Length < 6 Then
                 codigoPersist = ObtenerCodigoSeguridadDesdeBitacora(
                     cadenaConexion, emp_codigo, facNumero,
-                    Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito), suc_codigo)
+                    TipoBitacoraEnvio(TipoeCF, isNotaCredito), suc_codigo)
             End If
             Dim fechaRecepcion As String = DateTime.Now.ToString("M/d/yyyy h:mm:ss tt")
             Dim codigoMensaje As String = If(parsedDgii.CodigoMensaje, "")
@@ -3633,7 +3682,7 @@ WHERE usu_codigo = @usu
             Helper.InsertarBitacoraDGII(
             cadenaConexion, emp_codigo, facNumero, estado, trackId,
             codigoMensaje, mensajeError, xmlText, fechaRec, "", "",
-            Helper.ResolverTipoBitacoraDgii(TipoeCF, isNotaCredito),
+            TipoBitacoraEnvio(TipoeCF, isNotaCredito),
             SucInt(suc_codigo)
         )
             ' ---------- ActualizaciÃ³n de BD: Aceptado o Rechazado ----------
@@ -3674,7 +3723,19 @@ WHERE usu_codigo = @usu
                     Helper.EjecutarProcedimientoAlmacenado(cadenaConexion, "SP_UPDATEDATOSDGICOMPRAS", p)
 
                 Case "34" ' Devoluciones
-                    If isNotaCredito Then
+                    If esNotaCreditoCompra Then
+                        Dim p As SqlParameter() = {
+                           New SqlParameter("@emp_codigo", emp_codigo),
+                           New SqlParameter("@suc_codigo", suc_codigo),
+                           New SqlParameter("@ncr_numero", facNumero),
+                           New SqlParameter("@eNCF", encf),
+                           ParamCodigoSeguridad(codigoPersist),
+                           New SqlParameter("@fechafirma", fechaFirma),
+                           New SqlParameter("@aceptado", aceptado),
+                           New SqlParameter("@secuenciaUtilizada", secuenciautilizada)
+                        }
+                        Helper.EjecutarProcedimientoAlmacenado(cadenaConexion, "SP_UPDATEDATOSDGINCCOMPRA", p)
+                    ElseIf isNotaCredito Then
                         Dim p As SqlParameter() = {
                            New SqlParameter("@emp_codigo", emp_codigo),
                            New SqlParameter("@suc_codigo", suc_codigo),
@@ -3746,7 +3807,8 @@ WHERE usu_codigo = @usu
                     Helper.EjecutarProcedimientoAlmacenado(cadenaConexion, "SP_UPDATEDATOSDGI", p)
             End Select
 
-            If aceptado = 1 Then
+            ' NC de compras: esta rutina escribe en NotasCredito (ventas) y pisaria otra nota con el mismo numero
+            If aceptado = 1 AndAlso Not esNotaCreditoCompra Then
                 GuardarXmlYTotalEnTablaSegunTipo(
                         cadenaConexion:=cadenaConexion,
                         tipoECF:=TipoeCF,
@@ -11041,7 +11103,9 @@ SELECT @nuevo;"
 
         Dim consultaFactura As String
         Helper.RegistrarLogCliente("isNotaCredito " + isNotaCredito.ToString)
-        If isResBar Then
+        If esNotaCreditoCompra Then
+            consultaFactura = "SELECT * FROM vwNotaCreditoCompraXML WHERE dev_numero='" & facNumero & "' AND suc_codigo='" & suc_codigo & "' AND emp_codigo='" & emp_codigo & "'"
+        ElseIf isResBar Then
             consultaFactura = "SELECT * FROM vwDevolucionesRESBARXML WHERE dev_numero='" & facNumero & "' AND suc_codigo='" & suc_codigo & "' AND emp_codigo='" & emp_codigo & "'"
         ElseIf isPOS Then
             consultaFactura = "SELECT * FROM vwDevolucionesPOSXML WHERE dev_numero='" & facNumero & "' AND suc_codigo='" & suc_codigo & "' AND emp_codigo='" & emp_codigo & "'"
@@ -11269,7 +11333,9 @@ SELECT @nuevo;"
 
         Dim consultaDetalleFactura As String
 
-        If isNotaCredito Then
+        If esNotaCreditoCompra Then
+            consultaDetalleFactura = "SELECT * FROM vwNotaCreditoCompraDetalleXML WHERE dev_numero='" & facNumero & "' AND suc_codigo='" & suc_codigo & "' AND emp_codigo='" & emp_codigo & "'"
+        ElseIf isNotaCredito Then
             consultaDetalleFactura = "SELECT * FROM vwNotaCreditoDetalleXML WHERE dev_numero='" & facNumero & "' AND suc_codigo='" & suc_codigo & "' AND emp_codigo='" & emp_codigo & "'"
         ElseIf isResBar Then
             consultaDetalleFactura = "SELECT * FROM vwDevolucionesDetalleXMLRESBAR WHERE dev_numero='" & facNumero & "' AND suc_codigo='" & suc_codigo & "' AND emp_codigo='" & emp_codigo & "'"

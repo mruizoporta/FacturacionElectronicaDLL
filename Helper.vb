@@ -69,6 +69,7 @@ Public Class Helper
     Public Const BitacoraTipoDesembolsos As String = "DESEMBOLSOS"
     Public Const BitacoraTipoDevolucion As String = "DEVOLUCION"
     Public Const BitacoraTipoNotaCredito As String = "NOTA_CREDITO"
+    Public Const BitacoraTipoNotaCreditoCompra As String = "NOTA_CREDITO_COMPRA"
     Public Const BitacoraTipoNotasDebito As String = "NOTAS_DEBITO"
     Public Const BitacoraTipoMontosTicket As String = "MONTOS_TICKET"
     Public Const BitacoraTipoRestBar As String = "RESTBAR"
