@@ -14,6 +14,8 @@ Friend Class LuganisApiClient
     Private Shared ReadOnly _httpClient As HttpClient = CrearHttpClient()
 
     Private Shared Function CrearHttpClient() As HttpClient
+        ' Cargada desde Delphi, .NET arranca solo con TLS viejo; sin esto el login falla con "canal seguro SSL/TLS"
+        System.Net.ServicePointManager.SecurityProtocol = System.Net.ServicePointManager.SecurityProtocol Or System.Net.SecurityProtocolType.Tls12
         Dim c As New HttpClient()
         ' Evita que el envío quede colgado indefinidamente contra staging/red
         c.Timeout = TimeSpan.FromSeconds(60)
@@ -80,11 +82,13 @@ Friend Class LuganisApiClient
                     response.ErrorMessage = Nothing
                 Else
                     response.Success = False
-                    response.ErrorMessage = "Login en LUGANIS respondió 200 pero no se encontró el token en la respuesta."
+                    response.ErrorMessage = If(MensajeLoginLuganis(response.RawResponse),
+                        "Login en LUGANIS respondió 200 pero no se encontró el token en la respuesta.")
                 End If
             Else
                 response.Success = False
-                response.ErrorMessage = $"Error HTTP en login LUGANIS: {(CInt(httpResponse.StatusCode))} - {httpResponse.ReasonPhrase}"
+                response.ErrorMessage = If(MensajeLoginLuganis(response.RawResponse),
+                    $"Error HTTP en login LUGANIS: {(CInt(httpResponse.StatusCode))} - {httpResponse.ReasonPhrase}")
             End If
         Catch ex As Exception
             ' Devolver el detalle completo de la excepción para poder diagnosticar problemas de red/TLS/proxy desde Delphi.
@@ -95,6 +99,24 @@ Friend Class LuganisApiClient
         End Try
 
         Return response
+    End Function
+
+    ' LUGANIS responde 200 aun con credenciales malas y pone el motivo en status.message.
+    ' Devuelve Nothing si la respuesta no trae un motivo legible.
+    Friend Shared Function MensajeLoginLuganis(raw As String) As String
+        If String.IsNullOrWhiteSpace(raw) Then Return Nothing
+        If raw.TrimStart().StartsWith("<") Then
+            Return "LUGANIS respondió una página web en lugar de la API. Revise la URL en Parámetros (debe ser https://rd.api.tech-luganis.net)."
+        End If
+        Try
+            Dim st = Newtonsoft.Json.Linq.JObject.Parse(raw).SelectToken("status")
+            If st Is Nothing OrElse st.Type <> Newtonsoft.Json.Linq.JTokenType.Object Then Return Nothing
+            Dim msg = CStr(st("message"))
+            If String.IsNullOrWhiteSpace(msg) Then Return Nothing
+            Return $"LUGANIS rechazó el login ({CStr(st("code"))}): {msg}"
+        Catch
+            Return Nothing
+        End Try
     End Function
 
     ''' <summary>
