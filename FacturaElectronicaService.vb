@@ -7672,6 +7672,13 @@ SELECT @nuevo;"
 
                         montoGravado2 = If(IsDBNull(facturaReader("monto_grabado2")), 0D, Convert.ToDecimal(facturaReader("monto_grabado2"))).ToString("F2")
 
+                        ' E44 (regimen especial) va todo exento: MontoExento = fac_total (spFacturasXMLGet, tip_codigo 4)
+                        ' y las lineas ya salen con IndicadorFacturacion 4. Gravado o ITBIS aqui descuadran el total.
+                        If prefijo = "E44" Then
+                            montoGravado = "0.00" : montoGravado1 = "0.00" : montoGravado2 = "0.00"
+                            itbisTotal = "0.00" : itbisTotal1 = "0.00" : itbisTotal2 = "0.00"
+                        End If
+
 
                         If montoGravado <> "0" And montoGravado <> "0.00" Then
                             Helper.AddElement(xmlDoc, totalesNode, "MontoGravadoTotal", montoGravado)
@@ -7687,6 +7694,8 @@ SELECT @nuevo;"
                         End If
                         ' Verificar si el monto exento no es igual a 0.00 antes de agregar el elementoltw1
                         DecExento = Decimal.Parse(facturaReader("monto_exento").ToString())
+                        ' E44: el POS solo suma como exento las lineas sin ITBIS; el e-CF 44 es exento completo
+                        If prefijo = "E44" Then DecExento = CDec(totalFactura)
 
                         If (Not String.IsNullOrEmpty(DecExento.ToString("F2"))) And (Not DecExento.ToString("F2") = "0.00") Then
                             montoexento = DecExento.ToString("F2")
